@@ -1,0 +1,58 @@
+product:
+  apps-plus: Apps Plus
+
+# The nav entry and the list masthead both use the plural form, which is why the page reads
+# "Apps and Instances" while a single one of them is just an App.
+typeLabel:
+  appsplus.io.app: |-
+    {count, plural,
+      one { App }
+      other { Apps and Instances }
+    }
+  appsplus.io.appinstance: |-
+    {count, plural,
+      one { Instance }
+      other { Instances }
+    }
+
+appsPlus:
+  action:
+    createApp: Create App
+    createInstance: Create Instance
+    redeploy: Redeploy
+  list:
+    noInstances: No instances of this app yet.
+    noApps: No apps yet. An app is a set of YAML templates; an instance is one deployment of them.
+  headers:
+    app: App
+    clusters: Clusters
+    namespace: Namespace
+    ready: Ready
+    templates: Templates
+    instances: Instances
+  app:
+    displayName: Display Name
+    displayNameHint: Shown as the group heading in the list. Defaults to the name.
+    templates: Templates
+    templatesHint: One YAML file each, applied to every target.
+    addTemplate: Add Template
+    fileName: File Name
+    values: Default Values
+    valuesHint: Substituted into the templates. An instance can override any of them.
+    defaultNamespace: Default Namespace
+    defaultNamespaceHint: Where rendered resources land unless the instance says otherwise.
+    noTemplates: This app has no templates yet.
+  instance:
+    app: App
+    appHint: The app this is an instance of. Its templates are what gets deployed.
+    namespace: Target Namespace
+    namespaceHint: Namespace the rendered resources are created in on each target cluster.
+    targets: Target Clusters
+    targetsHint: Which clusters Fleet deploys this instance to.
+    values: Values
+    valuesHint: Overrides the app's default values for this instance only.
+    preview: Rendered Resources
+    previewHint: What this instance deploys, with values substituted.
+    bundle: Fleet Bundle
+    noApp: Pick an app first.
+    noTargets: No target clusters selected, so this instance deploys nowhere.
