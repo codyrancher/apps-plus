@@ -27,9 +27,6 @@ spec:
       subresources:
         status: {}
       additionalPrinterColumns:
-        - name: Display Name
-          type: string
-          jsonPath: .spec.displayName
         - name: Templates
           type: integer
           jsonPath: .status.templateCount
@@ -43,9 +40,6 @@ spec:
             spec:
               type: object
               properties:
-                displayName:
-                  type: string
-                  description: Human readable name shown as the group header in the list.
                 description:
                   type: string
                 templates:
@@ -61,10 +55,17 @@ spec:
                         type: string
                 values:
                   type: object
-                  description: Default values, substituted into templates as ${key}.
+                  description: >-
+                    Default values, substituted into templates as ${key}. The keys are the
+                    app's declared parameters - only these (and the built-ins) are ever
+                    substituted, so a template's own ${...} syntax survives rendering.
                   x-kubernetes-preserve-unknown-fields: true
-                defaultNamespace:
-                  type: string
+                valueLabels:
+                  type: object
+                  description: >-
+                    Human-readable names for the keys in values, shown on the install form.
+                    A key with no label is shown as itself.
+                  x-kubernetes-preserve-unknown-fields: true
                 defaultTargets:
                   type: array
                   items:
@@ -74,7 +75,10 @@ spec:
                         type: string
                 clusterTemplate:
                   type: string
-                  description: YAML for a cluster to provision when an instance asks for a new one. Not yet acted on.
+                  description: >-
+                    A provisioning.cattle.io Cluster manifest, for instances of this app that
+                    provision their own. Rendered with the same values as the templates above.
+                    Only its spec is used; name, workspace and ownership belong to the instance.
             status:
               type: object
               x-kubernetes-preserve-unknown-fields: true
@@ -141,12 +145,16 @@ spec:
                         type: string
                 provisionCluster:
                   type: object
-                  description: Ask for a cluster to be created for this instance. Not yet acted on.
+                  description: >-
+                    Create a cluster for this instance rather than deploying to existing ones.
+                    The cluster is owned by the instance, so deleting the instance deletes it.
+                    An instance owns at most one cluster, and deploys only to that one.
                   properties:
                     enabled:
                       type: boolean
                     name:
                       type: string
+                      description: Defaults to the instance name.
             status:
               type: object
               x-kubernetes-preserve-unknown-fields: true

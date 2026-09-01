@@ -14,7 +14,7 @@ Two ideas, and the whole thing follows from them:
 - An **App** is a definition - a set of YAML files and the values they render with. It is the
   chart half. It deploys nothing.
 - An **AppInstance** is one deployment of an App to one or more clusters. It is the release
-  half.
+  half. It can instead *provision* a cluster of its own and deploy to that.
 
 The list page shows both at once, apps as group headings and their instances as the rows,
 which is the shape Cluster Explorer uses for Projects and Namespaces.
@@ -27,6 +27,33 @@ instance garbage-collects the Bundle and Fleet removes what it applied.
 
 That is why `models/appsplus.io.appinstance.js` is the biggest file here. It is not a model
 with helpers on it; it is the reconciler, and `save()` is the only place a deploy happens.
+
+## Provisioning a cluster
+
+An instance with `spec.provisionCluster.enabled` creates a `provisioning.cattle.io/v1 Cluster`
+in `fleet-default` from the app's `spec.clusterTemplate`, rendered with the same `${...}`
+substitution as any resource template. **One instance owns at most one cluster**, and an
+instance that provisions one deploys to that cluster and nothing else - the target picker is
+replaced, not added to.
+
+The cluster carries an ownerReference back to the instance, so **deleting an instance deletes
+its cluster**. That is deliberate and it is destructive; `confirmRemove` makes Rancher demand
+the name be typed, and `warnDeletionMessage` says what is about to go. Do not quietly remove
+either.
+
+Three things about this that are easy to get wrong:
+
+- **The Bundle is written before the cluster exists.** A new cluster has no Fleet `Cluster`
+  object for minutes, so resolving its workspace by lookup falls back to `fleet-local` and the
+  Bundle lands somewhere it can never match. When an instance provisions, the workspace is
+  known up front (`fleet-default`). Fleet tolerates a target that is not there yet.
+- **The default template is a *custom* cluster** - no `machinePools`, so no cloud credential is
+  needed and Rancher publishes a registration command instead. Adding a `machinePools` block
+  with a `machineConfigRef` makes it driver-backed, which needs a credential configured first.
+- **Steve's collection cache lies.** Listing `fleet.cattle.io.bundle` can omit a Bundle that
+  exists and include one that is gone, for minutes at a time; a GET by id is accurate. That is
+  why `pruneBundles()` looks each candidate workspace up by id rather than listing and
+  filtering - built on a listing, the prune silently did nothing.
 
 ## What is where
 
@@ -68,14 +95,21 @@ After applying them the dashboard needs a page reload before it has the new sche
 ## Looking at what you changed
 
 ```bash
-kubectl -n fleet-local get bundles                     # one per instance, named apps-plus-<instance>
-kubectl -n fleet-local get bundle apps-plus-<name> -o yaml
+kubectl get bundles.fleet.cattle.io -A                 # one per workspace an instance targets
 kubectl get appinstances.appsplus.io
+kubectl -n fleet-default get clusters.provisioning.cattle.io   # what instances provisioned
+
+# The registration command for a custom cluster, which lives in the management cluster's
+# own namespace - the provisioning cluster's status.clusterName.
+CN=$(kubectl -n fleet-default get cluster.provisioning.cattle.io <name> -o jsonpath='{.status.clusterName}')
+kubectl -n $CN get clusterregistrationtokens.management.cattle.io default-token \
+  -o jsonpath='{.status.nodeCommand}'
 ```
 
 If an instance is stuck pending, the Bundle's `status` says why, and it is nearly always the
-target: a Bundle in `fleet-local` can only target the local cluster, and a downstream one has
-to be in `fleet-default`. `workspaceFor()` in the instance model is what picks that.
+target: **a Bundle only reaches clusters in its own namespace**. That is why an instance whose
+targets span two workspaces gets one Bundle in each (`targetsByWorkspace()`), and why putting
+them all in the first target's workspace deploys to only some of them.
 
 The shell's own components are the fastest documentation there is, because they are here:
 

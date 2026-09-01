@@ -4,6 +4,7 @@ import Tab from '@shell/components/Tabbed/Tab';
 import { Banner } from '@components/Banner';
 import { RcButton } from '@components/RcButton';
 import { APP_INSTANCE } from '../config/types';
+import { undeclaredWarnings } from '../render';
 
 /** An app's templates, and the instances currently running them. */
 export default {
@@ -32,6 +33,33 @@ export default {
     instances() {
       return this.value.instances || [];
     },
+
+    /**
+     * What an installation of this app gets to set, with the app's answer to each. This is the
+     * question anybody deciding whether to install it is asking, and until it was here the only
+     * way to answer it was to read the templates for `${...}`.
+     */
+    valueRows() {
+      const values = this.value.spec?.values || {};
+      const labels = this.value.spec?.valueLabels || {};
+
+      return Object.keys(values).sort().map((name) => ({
+        name,
+        label:   labels[name] || '',
+        default: values[name],
+      }));
+    },
+
+    /**
+     * Templates using `${...}` this app never declared, shaped for the banner.
+     *
+     * The other half of the declared model: without it, an app authored by hand shows "declares
+     * no values" here while its rendered YAML says `${maxmemory}` - the same app describing
+     * itself two different ways one tab apart.
+     */
+    undeclared() {
+      return undeclaredWarnings(this.value);
+    },
   },
 };
 </script>
@@ -39,17 +67,13 @@ export default {
 <template>
   <div>
     <div class="row mb-20">
-      <div class="col span-4">
+      <div class="col span-6">
         <label class="text-label">{{ t('appsPlus.headers.templates') }}</label>
         <div>{{ templates.length }}</div>
       </div>
-      <div class="col span-4">
+      <div class="col span-6">
         <label class="text-label">{{ t('appsPlus.headers.instances') }}</label>
         <div>{{ instances.length }}</div>
-      </div>
-      <div class="col span-4">
-        <label class="text-label">{{ t('appsPlus.app.defaultNamespace') }}</label>
-        <div>{{ value.spec?.defaultNamespace || 'default' }}</div>
       </div>
     </div>
 
@@ -81,6 +105,66 @@ export default {
           v-if="!templates.length"
           color="warning"
           :label="t('appsPlus.app.noTemplates')"
+        />
+      </Tab>
+
+      <Tab
+        name="values"
+        :label="t('appsPlus.app.values')"
+        :weight="9.5"
+        :error="!!undeclared.length"
+      >
+        <Banner
+          v-for="reference in undeclared"
+          :key="reference.file"
+          color="warning"
+        >
+          {{ t('appsPlus.values.undeclared', reference) }}
+          <router-link :to="value.editLocation">
+            {{ t('appsPlus.values.undeclaredDeclareEdit', { app: value.nameDisplay }) }}
+          </router-link>
+        </Banner>
+        <table
+          v-if="valueRows.length"
+          class="values-table"
+        >
+          <thead>
+            <tr>
+              <th>{{ t('appsPlus.values.key') }}</th>
+              <th>{{ t('appsPlus.values.default') }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="row in valueRows"
+              :key="row.name"
+            >
+              <td>
+                <div
+                  v-if="row.label"
+                  class="values-table__label"
+                >
+                  {{ row.label }}
+                </div>
+                <code>{{ row.name }}</code>
+              </td>
+              <td>
+                <span v-if="String(row.default ?? '').trim() !== ''">{{ row.default }}</span>
+                <span
+                  v-else
+                  class="text-muted"
+                >{{ t('appsPlus.instance.valueNoDefault') }}</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <!-- Only when the templates truly answer for themselves: with an undeclared `${...}`
+             on the books, "declares no values" would be this page contradicting its own
+             warning. -->
+        <Banner
+          v-else-if="!undeclared.length"
+          color="info"
+          :label="t('appsPlus.values.none')"
         />
       </Tab>
 
@@ -141,6 +225,30 @@ export default {
   li {
     padding: 6px 0;
     border-bottom: 1px solid var(--border);
+  }
+}
+
+.values-table {
+  border-collapse: collapse;
+  min-width: 50%;
+
+  th {
+    text-align: left;
+    font-weight: 600;
+    font-size: 12px;
+    color: var(--muted);
+    padding: 6px 24px 6px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  td {
+    padding: 8px 24px 8px 0;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+
+  &__label {
+    font-weight: 600;
   }
 }
 </style>
