@@ -28,6 +28,14 @@ export interface StagedTemplate {
   /** What it was called in the cluster, which is what other templates still point at. */
   origin: string;
   content: string;
+  /**
+   * True when this file is already in the app, rather than collected and not yet written.
+   *
+   * The two are edited the same way and differ only at Save: a saved file is written back over
+   * the one the app already has, and a collected one is appended. Removing a saved card removes
+   * it from the app, which is what "edit the app's resources here" has to mean.
+   */
+  saved?: boolean;
 }
 
 export interface BuilderState {
@@ -35,8 +43,14 @@ export interface BuilderState {
   /** The App being built. '' means nothing is selected yet. */
   app: string;
   templates: StagedTemplate[];
-  /** Values the imports suggested, merged as they arrive. */
-  values: Record<string, string>;
+  /**
+   * Values the imports suggested, merged as they arrive.
+   *
+   * `unknown` rather than `string`: a default is the value that came out of the YAML, with the
+   * type it had there, so that a `replicas` of 2 goes back as 2 rather than as '2'. The App CRD
+   * keeps `spec.values` unstructured, and rendering stringifies whatever it finds.
+   */
+  values: Record<string, unknown>;
   /** What each value should be called on an install form, keyed the same way. */
   labels: Record<string, string>;
   /** How wide the drawer is, in pixels. */
@@ -52,6 +66,15 @@ export interface BuilderState {
    * Like flash, an answer to a click rather than part of the collection, so never restored.
    */
   notices: SkippedNotice[];
+  /**
+   * The staged file whose edit page is open over the window, by name; '' when none is.
+   *
+   * Here rather than in the panel's own data because a second thing has to know: the page-mark
+   * switches that live on Rancher's real edit pages are `position: fixed`, so with the sheet
+   * open they float on top of it, pointing at boxes they have nothing to do with. Never
+   * restored, like flash and notices - a sheet is where somebody is, not what they collected.
+   */
+  form: string;
 }
 
 /** One dropped selection: what was skipped, and the already-staged resource that kept the name. */
@@ -64,13 +87,16 @@ export interface SkippedNotice {
   kept: string;
 }
 
+/** What a file holding several resources is grouped as, having no one kind of its own. */
+export const MULTIPLE_KIND = 'Multiple resources';
+
 const KEY = 'apps-plus.builder';
 const MIN_WIDTH = 320;
 const DEFAULT_WIDTH = 460;
 
 function empty(): BuilderState {
   return {
-    open: false, app: '', templates: [], values: {}, labels: {}, width: DEFAULT_WIDTH, flash: null, notices: [],
+    open: false, app: '', templates: [], values: {}, labels: {}, width: DEFAULT_WIDTH, flash: null, notices: [], form: '',
   };
 }
 
@@ -109,7 +135,12 @@ export const builder: BuilderState = reactive(restore());
 // that it survives walking around Rancher - and a navigation is not something this can hook.
 watch(builder, (now) => {
   try {
-    window.localStorage.setItem(KEY, JSON.stringify(now));
+    // Without the three that are never restored. They are answers to a click - a flash, a
+    // dismissable notice, the page somebody has open - and writing them meant the stored blob
+    // described a drawer that would not come back that way.
+    window.localStorage.setItem(KEY, JSON.stringify({
+      ...now, flash: null, notices: [], form: '',
+    }));
   } catch {
     // Storage can refuse. The drawer still works for this page; it just will not come back.
   }
@@ -394,11 +425,70 @@ function collectDangling(node: any, staged: Map<string, Set<string>>, parentKey:
   });
 }
 
+/**
+ * Show the files an app already has, so they can be read and edited beside the ones being
+ * collected.
+ *
+ * Replaces whatever was loaded for the app before and leaves the collected ones alone, so
+ * switching app swaps one set and keeps the other. The app's own values go *under* what is
+ * already here for the same reason they do on an add: a default somebody has just typed
+ * outranks the one the app was saved with.
+ */
+export function loadAppTemplates(templates: { name: string; content: string }[], values: Record<string, unknown>, labels: Record<string, string>): void {
+  const loaded: StagedTemplate[] = (templates || []).map((template) => {
+    let kind = '';
+
+    try {
+      // loadAll, not load: a hand-written template is often several resources separated by
+      // `---`, and `load` throws on those rather than returning the first. A file holding more
+      // than one is grouped as what it is - there is no single kind that describes it.
+      const documents = jsyaml.loadAll(template.content || '').filter((document) => !!document);
+
+      kind = documents.length === 1 ? String((documents[0] as any)?.kind || '') : MULTIPLE_KIND;
+    } catch {
+      // A file that is not valid YAML still belongs in the list; it just has no kind to group
+      // it by, and the card's own editors are how somebody would fix it.
+    }
+
+    return {
+      name:    template.name,
+      kind:    kind || 'Other',
+      source:  '',
+      // Deliberately blank: relinking rewrites references to things being *added*, and a file
+      // already in the app has had its names parameterised once already.
+      origin:  '',
+      content: template.content || '',
+      saved:   true,
+    };
+  });
+
+  // The app's copy wins a name it shares with something collected. Without this, a file that
+  // has just been written to the app and reloaded appears twice - once as the app's and once as
+  // the collection it came from - and the next save gives the second one a number.
+  const names = new Set(loaded.map((template) => template.name));
+
+  builder.templates = [
+    ...loaded,
+    ...builder.templates.filter((template) => !template.saved && !names.has(template.name)),
+  ];
+  builder.values = { ...values, ...builder.values };
+  builder.labels = { ...labels, ...builder.labels };
+}
+
+/** Forget the app's own files, without touching what has been collected. */
+export function dropAppTemplates(): void {
+  builder.templates = builder.templates.filter((template) => !template.saved);
+}
+
 export function removeTemplate(name: string): void {
   const at = builder.templates.findIndex((template) => template.name === name);
 
   if (at !== -1) {
     builder.templates.splice(at, 1);
+  }
+
+  if (builder.form === name) {
+    builder.form = '';
   }
 }
 
@@ -417,10 +507,16 @@ export function groupedTemplates(): { kind: string; templates: StagedTemplate[] 
     .sort((a, b) => a.kind.localeCompare(b.kind));
 }
 
-/** Forget what is staged, keeping the drawer open and the app selected. */
+/**
+ * Forget what has been collected, keeping the drawer open and the app selected.
+ *
+ * The app's own files stay: Clear throws away the collecting somebody has been doing, and
+ * throwing away a view of what is already saved would only mean reopening the drawer.
+ */
 export function clearStaged(): void {
-  builder.templates = [];
+  builder.templates = builder.templates.filter((template) => template.saved);
   builder.values = {};
   builder.labels = {};
   builder.notices = [];
+  builder.form = '';
 }

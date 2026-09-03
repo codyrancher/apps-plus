@@ -53,6 +53,20 @@ export default class App extends SteveModel {
   }
 
   /** Instances that cannot be rendered against the app as it now stands. */
+  /**
+   * The glance line under the title. The masthead already has a place for counts like these,
+   * and putting them there lines them up with the age and the labels instead of spending a row
+   * of the page on two numbers.
+   */
+  get details() {
+    const t = this.$rootGetters['i18n/t'];
+
+    return [
+      { label: t('appsPlus.headers.templates'), content: this.templates.length },
+      { label: t('appsPlus.headers.instances'), content: this.instances.length },
+    ];
+  }
+
   get instancesNeedingAttention() {
     return this.instances.filter((instance) => instance.needsAttention);
   }

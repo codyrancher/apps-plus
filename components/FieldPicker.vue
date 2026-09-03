@@ -2,30 +2,32 @@
 import jsyaml from 'js-yaml';
 import { LabeledInput } from '@components/Form/LabeledInput';
 import { Banner } from '@components/Banner';
+import { ToggleSwitch } from '@components/Form/ToggleSwitch';
 import {
-  suggestedFields, searchFields, applyToggle, writeAt
+  leafFields, isNever, applyToggle, writeAt
 } from '../fields';
 import { dumpTemplate } from '../import-resource';
 
 /**
- * Mark which fields of a resource somebody can change when they install the app.
+ * What an installation of this app will be able to change, and nothing else.
  *
- * A Deployment is a hundred lines and three of them matter. Reading YAML to find those three,
- * then hand-typing `${image}` in the right place and remembering to put the old value in the
- * defaults, is the part of building an app that nobody enjoys and everybody gets wrong once.
+ * This used to be where fields were *found*: a guessed shortlist of the ones usually worth
+ * parameterising, plus a search box over the rest. Choosing happens on the resource's own edit
+ * page now, where the field has a name, a section and a value in front of it instead of a
+ * JSONPath - so what is left here is the answer rather than the search, and a list of every
+ * field a Deployment has was only ever in the way of reading it.
  *
- * So: a short list of the fields that are usually the answer, each with its current value and a
- * switch. Flick it and the field becomes a parameter with its present value as the default;
- * flick it back and the value returns. A search box reaches everything else.
+ * So: one row per parameter, with the name an installation will see and the default it starts
+ * from, both editable. The switch turns it back off.
  *
- * The YAML remains the only copy. Every toggle rewrites it and re-reads it, so a field somebody
- * parameterised by hand shows here as already on, and nothing can drift out of step with what
- * will actually be deployed.
+ * The YAML remains the only copy. Every change rewrites it and re-reads it, so a field somebody
+ * parameterised by hand shows here too, and nothing can drift out of step with what will
+ * actually be deployed.
  */
 export default {
   name: 'FieldPicker',
 
-  components: { LabeledInput, Banner },
+  components: { LabeledInput, Banner, ToggleSwitch },
 
   props: {
     /** The template body. */
@@ -55,9 +57,6 @@ export default {
 
   emits: ['update:content', 'update:values', 'update:labels'],
 
-  data() {
-    return { query: '' };
-  },
 
   computed: {
     manifest() {
@@ -68,18 +67,15 @@ export default {
       }
     },
 
-    suggested() {
-      return this.manifest ? suggestedFields(this.manifest) : [];
-    },
-
-    found() {
-      if (!this.manifest || !this.query.trim()) {
-        return [];
-      }
-
-      const shown = new Set(this.suggested.map((field) => field.path));
-
-      return searchFields(this.manifest, this.query).filter((field) => !shown.has(field.path));
+    /**
+     * The fields that are already parameters, in the order the manifest holds them.
+     *
+     * Read out of the YAML rather than out of the values, so this cannot disagree with what is
+     * deployed: a `${...}` somebody typed into the file by hand is a parameter and appears here,
+     * and a value with nothing referring to it does not (the values editor marks those instead).
+     */
+    chosen() {
+      return this.manifest ? leafFields(this.manifest).filter((field) => field.parameter && !isNever(field.path)) : [];
     },
   },
 
@@ -160,27 +156,20 @@ export default {
 
     <template v-else>
       <p class="picker__hint">
-        {{ t('appsPlus.fields.hint') }}
+        {{ chosen.length ? t('appsPlus.fields.hint') : t('appsPlus.fields.none') }}
       </p>
 
       <div
-        v-for="field in suggested"
+        v-for="field in chosen"
         :key="field.path"
         class="field"
-        :class="{ 'field--on': !!field.parameter }"
       >
-        <button
+        <ToggleSwitch
           class="field__switch"
-          type="button"
-          :aria-pressed="!!field.parameter"
-          :aria-label="field.label"
-          @click="toggle(field)"
-        >
-          <i
-            class="icon"
-            :class="field.parameter ? 'icon-checkmark' : 'icon-plus'"
-          />
-        </button>
+          :value="true"
+          :aria-label="t('appsPlus.form.toggleTip') + ' ' + field.path"
+          @update:value="toggle(field)"
+        />
 
         <div class="field__body">
           <div
@@ -195,10 +184,7 @@ export default {
 
           <!-- Captions on both boxes: a pair reading only `replicas` and `1` says nothing
                about which is the name and which the value it starts at. -->
-          <div
-            v-if="field.parameter"
-            class="field__params"
-          >
+          <div class="field__params">
             <label class="field__param">
               <span class="field__caption">{{ t('appsPlus.fields.name') }}</span>
               <input
@@ -215,48 +201,6 @@ export default {
                 @change="e => setDefault(field, e.target.value)"
               >
             </label>
-          </div>
-          <div
-            v-else
-            class="field__value"
-          >
-            {{ field.value }}
-          </div>
-        </div>
-      </div>
-
-      <LabeledInput
-        v-model:value="query"
-        class="picker__search"
-        :label="t('appsPlus.fields.search')"
-        :placeholder="t('appsPlus.fields.searchPlaceholder')"
-      />
-
-      <div
-        v-for="field in found"
-        :key="field.path"
-        class="field"
-      >
-        <button
-          class="field__switch"
-          type="button"
-          :aria-label="field.label"
-          @click="toggle(field)"
-        >
-          <i class="icon icon-plus" />
-        </button>
-        <div class="field__body">
-          <div
-            v-if="field.friendly"
-            class="field__title"
-          >
-            {{ field.friendly }}
-          </div>
-          <div class="field__path">
-            {{ field.label }}
-          </div>
-          <div class="field__value">
-            {{ field.value }}
           </div>
         </div>
       </div>
@@ -286,16 +230,17 @@ export default {
 
   &--on { background: var(--nav-bg); }
 
+  // The same control, at the same size, as the switches on the edit page - it is the same
+  // decision seen from the other side, and two looks for one thing reads as two things.
   &__switch {
-    flex:          0 0 auto;
-    width:         22px;
-    height:        22px;
-    border:        1px solid var(--border);
-    border-radius: 4px;
-    background:    none;
-    color:         var(--muted);
-    cursor:        pointer;
-    line-height:   1;
+    flex:             0 0 auto;
+    // The class lands on ToggleSwitch's own flex container, so a narrower width here squeezes
+    // the switch inside it into a dot. It keeps its natural size and is scaled instead, and the
+    // footprint scale() leaves behind is taken back with the margin.
+    width:            48px;
+    transform:        scale(0.7);
+    transform-origin: left center;
+    margin:           0 -14px 0 0;
   }
 
   &--on &__switch {

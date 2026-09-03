@@ -63,7 +63,8 @@ export default function(plugin: IPlugin): void {
 
       (resources || []).forEach((resource) => stageResource(resource));
     },
-  });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  } as any);
 
   // A drawer that was open when the page was left should be open when it comes back. This waits
   // for the dashboard to exist before building anything; see restoreBuilder.

@@ -168,7 +168,10 @@ function parameterise(manifest: Record<string, any>, values: Record<string, stri
   if (typeof manifest.spec?.replicas === 'number') {
     const key = parameterName('replicas', name, taken);
 
-    values[key] = String(manifest.spec.replicas);
+    // The number, not its text. A default carries the type it was taken out of the manifest
+    // with - see applyToggle, which is the other way a field becomes a parameter - and the two
+    // have to agree, because substitution decides how to write a value from that type.
+    values[key] = manifest.spec.replicas;
     labels[key] = 'Replicas';
     manifest.spec.replicas = `\${${ key }}`;
   }
@@ -218,7 +221,7 @@ function parameterName(base: string, resourceName: string, taken: Set<string>): 
   }
 }
 
-/** `hello-site` + `Deployment` -> `hello-site-deployment.yaml`. */
+/** `hello-site` + `Deployment` -> `hello-site-deployment.yaml`. Takes the display name. */
 function fileNameFor(name: string, kind: string): string {
   const parts = [name, String(kind || 'resource').toLowerCase()]
     .map((part) => String(part || '').replace(/[^A-Za-z0-9.-]+/g, '-').replace(/^-|-$/g, ''))
@@ -288,6 +291,12 @@ export function importResource(resource: any, taken: Iterable<string> = []): Imp
   (manifest.spec?.ports || []).forEach((port: Record<string, unknown>) => drop(port, 'nodePort', removed, 'spec.ports[].'));
 
   const original = String(manifest.metadata?.name || '');
+  // What Rancher calls it, which is not always what Kubernetes calls it: a management cluster's
+  // `metadata.name` is `c-m-pfck6c2c` and its display name is the one on screen. Taken from the
+  // model rather than the manifest because it is a getter, and the clone above is plain data.
+  // Only the file name uses it - `original` stays the real name, because that is what the other
+  // templates' references point at.
+  const display = String(resource?.nameDisplay || original);
 
   parameterise(manifest, values, labels, new Set(taken));
 
@@ -296,7 +305,7 @@ export function importResource(resource: any, taken: Iterable<string> = []): Imp
     // Named after the resource as well as its kind. An app that collects two Deployments
     // otherwise lists `deployment.yaml` and `deployment-2.yaml`, and the only way to tell which
     // is which is to open both.
-    name:         fileNameFor(original, manifest.kind),
+    name:         fileNameFor(display, manifest.kind),
     originalName: original,
     values,
     labels,

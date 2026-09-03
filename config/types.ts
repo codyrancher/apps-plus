@@ -33,6 +33,11 @@ export function steveType(manifest: { apiVersion?: string; kind?: string }): str
 export const FLEET_BUNDLE = 'fleet.cattle.io.bundle';
 export const FLEET_CLUSTER = 'fleet.cattle.io.cluster';
 
+// One BundleDeployment per cluster a Bundle reaches, living in that cluster's own Fleet
+// namespace. It is the only place that says what actually landed on a downstream cluster and
+// how it is doing - the Bundle above it only aggregates counts.
+export const FLEET_BUNDLE_DEPLOYMENT = 'fleet.cattle.io.bundledeployment';
+
 // The Bundle an instance owns is named after it, so the pair can be found from either side
 // without a label selector.
 export const BUNDLE_PREFIX = 'apps-plus-';

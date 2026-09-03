@@ -174,18 +174,180 @@ export function missingValues(app: any, instance: any): string[] {
 }
 
 /**
+ * A line that is one placeholder and nothing else, in a position where a YAML scalar goes:
+ * `key: ${name}`, `- key: ${name}`, or a `- ${name}` sequence item.
+ *
+ * Captured in three parts - the indentation, everything up to the value, and the name - because
+ * putting a value there is not always a matter of writing it out. See substituteScalar.
+ */
+const WHOLE_SCALAR = /^([ \t]*)((?:[^\s#][^:\n]*:[ \t]+)|(?:- ))\$\{([A-Za-z0-9_.-]+)\}[ \t]*\r?$/;
+
+/**
+ * The header of a literal or folded block: `key: |`, `- >-`, `data: |2`.
+ *
+ * Everything indented under one of these is a file, not YAML, and must be left to the plain
+ * substitution however much it looks like a mapping. A ConfigMap holding an nginx config or a
+ * .env file has lines that read exactly like `key: ${value}`, and rewriting one as a YAML
+ * scalar - quoting it, or spreading it over several lines - edits somebody's file.
+ */
+const BLOCK_HEADER = /^([ \t]*)((?:- )*)([^\s#][^:\n]*:[ \t]*)?[|>][-+]?\d*[ \t]*(?:#.*)?\r?$/;
+
+/**
+ * The indentation a block's content has to beat, which is the header's *node*, not its line.
+ *
+ * `- key: |` puts the mapping two columns in from the dash, so its siblings are indented two
+ * further than the line the header is on - and measuring from the line swallowed them as file
+ * content, which turned a valid template into invalid YAML. A bare `- |` has no key, so there
+ * the sequence itself is the node and the line's own indentation is right.
+ */
+function blockIndent(header: RegExpExecArray): number {
+  return header[1].length + (header[3] ? header[2].length : 0);
+}
+
+/**
+ * Values a plain YAML scalar cannot hold as written.
+ *
+ * Empty, or padded with whitespace YAML would eat; or holding `: ` or ` #`, which start a
+ * mapping and a comment; or opening with an indicator character, which makes it an anchor, an
+ * alias, a tag, a flow collection or a comment rather than a string; or being nothing but an
+ * indicator. A number, and anything else that is only letters and digits, is deliberately not
+ * here - `replicas: '2'` is rejected by the apiserver, so quoting must be the exception rather
+ * than the safe default.
+ */
+const NEEDS_QUOTES = /^$|^\s|\s$|: | #|^[?:-]\s|^[?:-]$|^[,[\]{}#&*!|>'"%@`]/;
+
+/**
+ * Values that stop being strings when written bare.
+ *
+ * The apiserver reads YAML 1.1, where `true`, `yes`, `off` and `null` are booleans and null,
+ * `0755` is 493, `1:30` is 90 and a bare date is a timestamp. So a ConfigMap key whose value is
+ * the text `true` deployed as the boolean `true` and was rejected with `cannot unmarshal bool
+ * into Go struct field ConfigMap.data of type string`.
+ *
+ * Applied only to a value that is still a string by the time it gets here, and that is the whole
+ * of the judgement - see mergeValues. A field parameterised from a number or a boolean stores
+ * one, and an installation's override is given the type of the default it overrides, so anything
+ * still a string is a string the app declared as one. Deciding this from the *type* is what
+ * replaced three rounds of guessing at it from the text.
+ */
+const NOT_A_STRING = [
+  /^(?:y|n|yes|no|true|false|on|off|null|~)$/i,
+  /^[-+]?(?:\d[\d_]*(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?$/,
+  /^0o?[0-7]+$/i,
+  /^[-+]?\d[\d_]*(?::[0-5]?\d)+(?:\.\d*)?$/,
+  /^\d{4}-\d{1,2}-\d{1,2}(?:[Tt ].*)?$/,
+];
+
+/**
+ * Write one value into the scalar position a placeholder occupied.
+ *
+ * The reason this is not `String(value)` is the case this whole feature is built around: a
+ * ConfigMap key holding a file. Its default *is* the file - several lines of HTML or nginx
+ * config - and pasting that after `index.html: ` produces a template that is no longer YAML.
+ * It is not a preview problem, though that is where it shows: renderTemplates substitutes the
+ * same way, so the Bundle carried the same broken text to the cluster.
+ *
+ * So a multi-line value becomes a literal block, indented under its key, chomped to keep
+ * exactly the trailing newlines it had and carrying an explicit indentation indicator so that a
+ * value whose own first line is indented still says what it says. A single-line value that a
+ * plain scalar cannot hold, or that would stop being a string, is quoted.
+ */
+function substituteScalar(indent: string, prefix: string, value: unknown, declaredString: boolean): string {
+  const text = String(value);
+  const head = `${ indent }${ prefix }`;
+
+  if (!text.includes('\n')) {
+    // Quoted because YAML would otherwise not read it back as a value at all, or because the
+    // app says this parameter is a string and writing it bare would change its type. Not
+    // quoted on suspicion: a parameter the app declares no default for has no type to go on,
+    // and `replicas: '3'` for an installation that supplied 3 is the wrong kind of guess.
+    const quote = NEEDS_QUOTES.test(text) ||
+      (declaredString && NOT_A_STRING.some((pattern) => pattern.test(text)));
+
+    return head + (quote ? `'${ text.replace(/'/g, "''") }'` : text);
+  }
+
+  // Deeper than the node the value belongs to, which for a sequence item is two further in than
+  // the dash. The indicator is that depth measured from the parent node, which is the dash for
+  // a bare item and the key for everything else - so 4 in the one case and 2 in the other.
+  const inSequence = prefix.startsWith('- ');
+  const body = indent + (inSequence ? '    ' : '  ');
+  const indicator = prefix === '- ' ? 4 : 2;
+  const trailing = (/\n+$/.exec(text) || [''])[0].length;
+  const chomp = trailing === 0 ? '-' : (trailing === 1 ? '' : '+');
+  const lines = text.replace(/\n+$/, '').split('\n');
+  // `|+` keeps every trailing newline, so the ones stripped above are written back as blanks.
+  const extra = trailing > 1 ? new Array(trailing - 1).fill('') : [];
+
+  return [`${ head }|${ indicator }${ chomp }`, ...lines.map((line) => (line ? body + line : '')), ...extra].join('\n');
+}
+
+/**
+ * The parameters the app declares a string default for.
+ *
+ * The only record of what a field is. An installation's values all arrive as text, so by the
+ * time they are being written back into YAML nothing else can tell `replicas` from a ConfigMap
+ * key that happens to hold digits - and getting that wrong sends `replicas: '3'` or `port: 8080`
+ * to the apiserver, which refuses both. A blank default is not a declaration of anything: it is
+ * the required-value case, and there is nothing to learn from it.
+ */
+function declaredStrings(values: Record<string, unknown> | undefined): Set<string> {
+  // The built-ins are seeded rather than looked up, because they are appended to the bag after
+  // the declarations are read and so were never in it. All five are names - `no`, `on` and `y`
+  // are legal RFC1123 labels, and so is `123` - and a namespace written bare as a boolean or a
+  // number is rejected by the apiserver.
+  return new Set([...BUILT_IN_VALUES, ...Object.entries(values || {})
+    .filter(([, value]) => typeof value === 'string' && value.trim() !== '')
+    .map(([key]) => key)]);
+}
+
+/** Every `${name}` in a line, replaced from the bag and otherwise left alone. */
+function plain(line: string, values: Record<string, unknown>): string {
+  return line.replace(VARIABLE, (match, key) => {
+    const value = values[key];
+
+    return value === undefined || value === null ? match : String(value);
+  });
+}
+
+/**
  * Replace `${name}` for the names in the bag, and nothing else.
  *
  * The bag is the declared values plus the built-ins (see mergeValues), which is what makes this
  * safe to run over a template whose file bodies use `${...}` for their own purposes: an
  * entrypoint script's `${SA}` is not in the bag, so it survives rendering exactly as written.
+ *
+ * Line by line, because a placeholder that is a whole value is a different thing from one
+ * embedded in a string: only the first can be given a block scalar, and only the first knows
+ * what it is indented under. A placeholder inside a longer string, or anywhere inside a block
+ * scalar - which is a file rather than YAML - gets the plain substitution, which is all that
+ * can be done for it.
  */
-export function substitute(source: string, values: Record<string, unknown>): string {
-  return (source || '').replace(VARIABLE, (match, key) => {
-    const value = values[key];
+export function substitute(source: string, values: Record<string, unknown>, declared?: Record<string, unknown>): string {
+  const strings = declaredStrings(declared === undefined ? values : declared);
+  let block: number | null = null;
 
-    return value === undefined || value === null ? match : String(value);
-  });
+  return (source || '').split('\n').map((line) => {
+    const indent = (/^[ \t]*/.exec(line) as RegExpExecArray)[0].length;
+
+    // A blank line neither ends a block nor starts one; inside a block it is part of the file.
+    if (block !== null && (!line.trim() || indent > block)) {
+      return plain(line, values);
+    }
+
+    const header = BLOCK_HEADER.exec(line);
+
+    block = header ? blockIndent(header) : null;
+
+    const whole = header ? null : WHOLE_SCALAR.exec(line);
+    const value = whole ? values[whole[3]] : undefined;
+
+    if (whole && value !== undefined && value !== null) {
+      return substituteScalar(whole[1], whole[2], value, strings.has(whole[3]));
+    }
+
+    return plain(line, values);
+  }).join('\n');
 }
 
 /**
@@ -195,10 +357,11 @@ export function substitute(source: string, values: Record<string, unknown>): str
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mergeValues(app: any, instance: any): Record<string, unknown> {
   const namespace = instance?.spec?.namespace || 'default';
+  const declared = app?.spec?.values || {};
 
   return {
-    ...(app?.spec?.values || {}),
-    ...(instance?.spec?.values || {}),
+    ...declared,
+    ...typedOverrides(declared, instance?.spec?.values),
     app:      app?.metadata?.name || instance?.spec?.app || '',
     install:  instance?.metadata?.name || '',
     // The name this had before installations were called installations. Kept because the
@@ -214,12 +377,73 @@ export function mergeValues(app: any, instance: any): Record<string, unknown> {
   };
 }
 
+/** What YAML 1.1 reads as a boolean, which is what an installation may type into one. */
+const BOOLEAN_WORDS: Record<string, boolean> = {
+  true: true, yes: true, on: true, y: true, false: false, no: false, off: false, n: false,
+};
+
+/**
+ * Values given the type of the declaration they answer to.
+ *
+ * Every value that reaches this has been through a form input, so it is a string - including the
+ * ones for fields that are numbers and booleans. The declared default is the only record of what
+ * the field actually is, and losing it is what sends `replicas: '3'` or a ConfigMap's
+ * `port: 8080` to an apiserver that refuses both.
+ *
+ * Used on both sides on purpose. An installation's overrides are typed against the app's
+ * defaults here; the app's own Default Values table types its edits against what it already
+ * holds (see ValuesEditor), because that table is a text widget and would otherwise downgrade a
+ * number to a string on the first keystroke - quietly, since nothing fails until an installation
+ * will not apply. The two sides being one function is what stops them drifting apart again.
+ *
+ * The two sides agree about types and disagree about blank, which is the one seam between them
+ * and so the one thing this takes an argument for. Blank on an installation means "leave it to
+ * the app default" - the form says so - and the override is dropped, because `''` in an int32 is
+ * rejected and neither zero nor false is what was meant. Blank on the app's own table means the
+ * opposite: this parameter is required and every installation has to answer it, which is what
+ * `isSet` reads and `requiredValues` reports, so the key stays with nothing in it. Dropping it
+ * there deleted the parameter, left the template saying a literal `${replicas}`, and let an
+ * installation save that nothing would block.
+ *
+ * A value the declaration says nothing about is left exactly as typed - inventing a type for it
+ * would be the same guess in a different place.
+ */
+export function typedOverrides(
+  declared: Record<string, unknown>,
+  overrides: Record<string, unknown> | undefined,
+  blankDeclaresRequired = false,
+): Record<string, unknown> {
+  return Object.entries(overrides || {}).reduce((out: Record<string, unknown>, [key, value]) => {
+    const base = declared[key];
+    const typed = typeof base === 'number' || typeof base === 'boolean';
+    const text = typeof value === 'string' ? value.trim() : '';
+
+    if (typed && typeof value === 'string' && text === '') {
+      if (blankDeclaresRequired) {
+        out[key] = value;
+      }
+
+      return out;
+    }
+
+    if (typeof base === 'number' && text !== '' && !isNaN(Number(text))) {
+      out[key] = Number(text);
+    } else if (typeof base === 'boolean' && BOOLEAN_WORDS[text.toLowerCase()] !== undefined) {
+      out[key] = BOOLEAN_WORDS[text.toLowerCase()];
+    } else {
+      out[key] = value;
+    }
+
+    return out;
+  }, {});
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function renderTemplates(app: any, instance: any): Template[] {
   const values = mergeValues(app, instance);
 
   return (app?.spec?.templates || []).map((template: Template, i: number) => ({
-    name:    substitute(template?.name || `resource-${ i }.yaml`, values),
-    content: substitute(template?.content || '', values),
+    name:    substitute(template?.name || `resource-${ i }.yaml`, values, app?.spec?.values),
+    content: substitute(template?.content || '', values, app?.spec?.values),
   }));
 }

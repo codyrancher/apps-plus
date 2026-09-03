@@ -5,7 +5,11 @@
 // twice, so hand-editing the YAML and using the picker cannot disagree.
 //
 // Pure on purpose - no Vue, no store. What counts as a field worth suggesting is the whole
-// judgement of this feature, and it should be readable without any of that.
+// judgement of this feature, and it should be readable without any of that. The one import is
+// the list of names an installation answers for itself, which is data and lives in render.ts
+// because that is what substitutes them.
+
+import { BUILT_IN_VALUES } from './render';
 
 /** One scalar in a manifest, addressed by the path that reaches it. */
 export interface Field {
@@ -81,6 +85,21 @@ const NEVER = [
 const PLACEHOLDER = /^\$\{([A-Za-z0-9_.-]+)\}$/;
 
 /**
+ * The parameter name in a value, when the value is entirely one parameter *of this app*.
+ *
+ * The qualification is the point. A field reading `${namespace}` is not something somebody
+ * declared - it is one of the names an installation supplies about itself, and it has no entry
+ * in the values at all. Counted as a parameter it presented as already on, and turning it "off"
+ * looked up a default that was never there and wrote the empty string over it: one click, and
+ * the field is gone. Counted as a plain value it reads as off, and turning it on is reversible.
+ */
+function ourParameter(value: unknown): string | null {
+  const match = PLACEHOLDER.exec(String(value ?? ''));
+
+  return match && !BUILT_IN_VALUES.includes(match[1]) ? match[1] : null;
+}
+
+/**
  * What a field is called on Rancher's own form for it.
  *
  * The point of the picker is that somebody should not have to read YAML to find the three
@@ -121,6 +140,13 @@ const LABELS: [RegExp, string][] = [
   [/(^|\.)serviceAccountName$/, 'Service Account'],
   [/(^|\.)env\.\d+\.value$/, 'Environment Variable'],
   [/^data\./, 'Data'],
+  // Promoted by the form wiring rather than by SUGGESTED (see builder/form-wiring), and they
+  // need labels for the same reason: a parameter with none wears its raw JSONPath on the
+  // install form.
+  [/(^|\.)containers\.\d+\.name$/, 'Container Name'],
+  [/(^|\.)ports\.\d+\.name$/, 'Port Name'],
+  [/(^|\.)hostPort$/, 'Host Port'],
+  [/(^|\.)hostIP$/, 'Host IP'],
   // The safety net for SUGGESTED: anything promoted without a more specific label above still
   // gets a readable title rather than its path.
   [/(^|\.)port$/, 'Port'],
@@ -206,14 +232,13 @@ export function leafFields(manifest: any, prefix = '', root: any = manifest): Fi
   }
 
   const value = String(manifest);
-  const placeholder = PLACEHOLDER.exec(value);
 
   return [{
     path:      prefix,
     label:     labelFor(prefix),
     friendly:  friendlyFor(prefix, root),
     value,
-    parameter: placeholder ? placeholder[1] : null,
+    parameter: ourParameter(value),
   }];
 }
 
@@ -270,7 +295,13 @@ export function searchFields(manifest: any, query: string): Field[] {
 export function parameterNameFor(path: string, taken: Iterable<string>): string {
   const parts = path.split('.').filter((part) => !/^\d+$/.test(part));
   const base = parts[parts.length - 1] || 'value';
-  const used = new Set(taken);
+  // The built-ins are taken too, and by somebody who will not give them back. A label keyed
+  // `app` or a `metadata.namespace` derives exactly those names, and minting one produced a
+  // field that could not be turned off again: the YAML said `${app}`, ourParameter refused to
+  // call that a parameter of this app, so the switch read as off and pressing it went round
+  // the on branch a second time - `${app2}` defaulting to the literal text `${app}`, with the
+  // real value lost. The name is the whole of the fix; ourParameter is right to refuse.
+  const used = new Set([...taken, ...BUILT_IN_VALUES]);
 
   if (!used.has(base)) {
     return base;
@@ -283,17 +314,80 @@ export function parameterNameFor(path: string, taken: Iterable<string>): string 
   }
 }
 
-/** A default comes back as a string; a number that was a number should go back as one. */
-function coerce(value: string): unknown {
-  if (/^-?\d+$/.test(value)) {
-    return Number(value);
+/**
+ * Paths where a bare string default should be read back as the number or boolean it spells.
+ *
+ * An allowlist, and short on purpose. A default that still carries its own type is written back
+ * as it is and never reaches this, so the only thing left to guess about is a default somebody
+ * typed into a form - which arrives as a string whatever the field underneath it is.
+ *
+ * This used to be the other way round: coerce, unless the path is on a list of fields that are
+ * strings in the schema. A denylist has to be complete to be safe and never was - a ConfigMap
+ * key, a container's `args`, a Service's `selector`, a toleration's `value` are all `string`,
+ * and every one it missed was a manifest that stopped applying with `cannot unmarshal number
+ * into Go struct field ... of type string`. Inverted, a miss is a quoted number in a numeric
+ * field: smaller, rarer, and it only happens to somebody who hand-edited that default.
+ */
+const TYPED = [
+  /(^|\.)replicas$/,
+  /(^|\.)containerPort$/,
+  /(^|\.)hostPort$/,
+  /(^|\.)nodePort$/,
+  /(^|\.)ports\.\d+\.port$/,
+  // IntOrString: a numeric string is rejected as "must contain at least one letter", so these
+  // have to come back as numbers. Both are offered by the picker without anybody searching.
+  /(^|\.)targetPort$/,
+  /(^|\.)httpGet\.port$/,
+  /(^|\.)tcpSocket\.port$/,
+  /(^|\.)grpc\.port$/,
+  // `replicas` above does not match these two, which is exactly the kind of gap this list is
+  // for: their neighbour is covered and they read as if they were.
+  /(^|\.)minReplicas$/,
+  /(^|\.)maxReplicas$/,
+  /(^|\.)runAsUser$/,
+  /(^|\.)runAsGroup$/,
+  /(^|\.)fsGroup$/,
+  /(^|\.)backoffLimit$/,
+  /(^|\.)parallelism$/,
+  /(^|\.)completions$/,
+  /(^|\.)activeDeadlineSeconds$/,
+  /(^|\.)defaultMode$/,
+  /(^|\.)minReadySeconds$/,
+  /(^|\.)periodSeconds$/,
+  /(^|\.)initialDelaySeconds$/,
+  /(^|\.)timeoutSeconds$/,
+  /(^|\.)failureThreshold$/,
+  /(^|\.)successThreshold$/,
+  /(^|\.)hostNetwork$/,
+  /(^|\.)privileged$/,
+  /(^|\.)allowPrivilegeEscalation$/,
+  /(^|\.)readOnlyRootFilesystem$/,
+  /(^|\.)runAsNonRoot$/,
+  /(^|\.)suspend$/,
+];
+
+/**
+ * The value to put back at a path, given the default that was stored for it.
+ *
+ * A default that is not a string still has the type it was taken out of the YAML with and goes
+ * straight back, which is every ordinary round trip and is exact for all of them. A string
+ * either was a string or is one because a form gave it back; only the list above can tell those
+ * apart, and everywhere else a string is what a string was.
+ */
+function restore(path: string, previous: unknown): unknown {
+  if (typeof previous !== 'string' || !TYPED.some((pattern) => pattern.test(path))) {
+    return previous;
   }
 
-  if (value === 'true' || value === 'false') {
-    return value === 'true';
+  if (/^-?\d+$/.test(previous)) {
+    return Number(previous);
   }
 
-  return value;
+  if (previous === 'true' || previous === 'false') {
+    return previous === 'true';
+  }
+
+  return previous;
 }
 
 /**
@@ -314,21 +408,23 @@ export function applyToggle(
   labels: Record<string, string>,
 ): { values: Record<string, unknown>; labels: Record<string, string> } {
   const current = readAt(manifest, path);
-  const placeholder = PLACEHOLDER.exec(String(current ?? ''));
+  const parameter = ourParameter(current);
   const nextValues = { ...values };
   const nextLabels = { ...labels };
 
-  if (placeholder) {
-    const name = placeholder[1];
-    const previous = nextValues[name];
+  if (parameter) {
+    const previous = nextValues[parameter];
 
-    writeAt(manifest, path, previous === undefined ? '' : coerce(String(previous)));
-    delete nextValues[name];
-    delete nextLabels[name];
+    writeAt(manifest, path, previous === undefined ? '' : restore(path, previous));
+    delete nextValues[parameter];
+    delete nextLabels[parameter];
   } else {
     const name = parameterNameFor(path, Object.keys(nextValues));
 
-    nextValues[name] = String(current ?? '');
+    // Stored with its type, not stringified: the default *is* the value that came out of the
+    // YAML, and a `replicas` that goes in as the number 2 comes back as the number 2 without
+    // anybody having to work out that it should.
+    nextValues[name] = current ?? '';
     nextLabels[name] = friendlyFor(path, manifest) || labelFor(path);
     writeAt(manifest, path, `\${${ name }}`);
   }
@@ -336,25 +432,73 @@ export function applyToggle(
   return { values: nextValues, labels: nextLabels };
 }
 
-/** The parameter name at a path, when the field there is `${something}`. */
+/** The parameter name at a path, when the field there is one of this app's `${something}`. */
 export function parameterAt(manifest: any, path: string): string | null {
-  const match = PLACEHOLDER.exec(String(readAt(manifest, path) ?? ''));
+  return ourParameter(readAt(manifest, path));
+}
 
-  return match ? match[1] : null;
+/**
+ * The object a path ends in, and the key it ends at.
+ *
+ * Not a plain `split('.')`: a ConfigMap's keys are file names, so `data.index.html` is two keys
+ * and not three, and reading it a segment at a time reaches `undefined` and offers no toggle on
+ * the one field a ConfigMap has. So at every step the longest run of segments that is actually a
+ * key of the node in hand wins, which resolves a dotted key wherever one appears and is exactly
+ * `split('.')` everywhere else - `spec.template.spec` has no key called `template.spec` to find.
+ *
+ * The last segment is allowed not to exist yet, so writeAt can create one; an intermediate that
+ * does not exist is a path into nothing, and answers null.
+ */
+function locate(manifest: any, path: string): { holder: any; key: string } | null {
+  const parts = path.split('.');
+  let node = manifest;
+  let at = 0;
+
+  while (at < parts.length) {
+    if (node === null || node === undefined || typeof node !== 'object') {
+      return null;
+    }
+
+    let key = '';
+    let taken = 0;
+
+    for (let end = parts.length; end > at; end--) {
+      const candidate = parts.slice(at, end).join('.');
+
+      if (Object.prototype.hasOwnProperty.call(node, candidate)) {
+        key = candidate;
+        taken = end - at;
+        break;
+      }
+    }
+
+    if (!taken) {
+      return at === parts.length - 1 ? { holder: node, key: parts[at] } : null;
+    }
+
+    if (at + taken === parts.length) {
+      return { holder: node, key };
+    }
+
+    node = node[key];
+    at += taken;
+  }
+
+  return null;
 }
 
 /** Read the scalar at a path. */
 export function readAt(manifest: any, path: string): any {
-  return path.split('.').reduce((node, key) => (node === undefined || node === null ? node : node[key]), manifest);
+  const found = locate(manifest, path);
+
+  return found ? found.holder[found.key] : undefined;
 }
 
 /** Write a scalar at a path, in place. */
 export function writeAt(manifest: any, path: string, value: unknown): void {
-  const parts = path.split('.');
-  const last = parts.pop() as string;
-  const holder = parts.reduce((node, key) => node?.[key], manifest);
+  const found = locate(manifest, path);
 
-  if (holder && typeof holder === 'object') {
-    holder[last] = value;
+  if (found && found.holder && typeof found.holder === 'object') {
+    found.holder[found.key] = value;
   }
 }

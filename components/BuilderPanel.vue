@@ -5,13 +5,21 @@ import { Banner } from '@components/Banner';
 import { RcButton } from '@components/RcButton';
 import YamlEditor from '@shell/components/YamlEditor';
 import FieldPicker from './FieldPicker';
+import ResourceForm from './ResourceForm';
 import {
   APP, APP_INSTANCE, APP_QUERY, BLANK_CLUSTER, CREATE_ROUTE, DETAIL_ROUTE, PRODUCT_NAME
 } from '../config/types';
 import {
-  builder, groupedTemplates, removeTemplate, clearStaged, danglingReferences, MIN_WIDTH
+  builder, groupedTemplates, removeTemplate, clearStaged, danglingReferences, loadAppTemplates,
+  dropAppTemplates, MIN_WIDTH
 } from '../builder/state';
 import { closeBuilder, resizeBuilder } from '../builder/overlay';
+
+/** The dropdown row that means "make one", rather than the name of an app. */
+const NEW_APP = '__new__';
+
+/** How long after the last change the app is written. See queueSave. */
+const SAVE_DELAY = 700;
 
 /**
  * Build an app out of resources you are already looking at.
@@ -28,7 +36,7 @@ export default {
   name: 'BuilderPanel',
 
   components: {
-    LabeledSelect, LabeledInput, Banner, RcButton, YamlEditor, FieldPicker
+    LabeledSelect, LabeledInput, Banner, RcButton, YamlEditor, FieldPicker, ResourceForm
   },
 
   data() {
@@ -45,8 +53,11 @@ export default {
       newName:   '',
       saving:    false,
       error:     '',
-      // The app the last Save went into, so the banner can offer somewhere to go next.
-      saved:     null,
+      // What was last written, so that reloading the app cannot start a loop of empty writes.
+      lastWritten: '',
+      // When the last write landed, which is all the footer needs to say "saved".
+      savedAt:     0,
+      saveTimer:   null,
       drag:      null,
       // A restored selection that no longer exists, kept so the banner can say which one.
       gone:      '',
@@ -70,19 +81,65 @@ export default {
       this.gone = this.builder.app;
       this.builder.app = '';
     }
+
+    this.showAppTemplates();
+
+    // A drawer that comes back with files collected before it was closed has changed nothing
+    // since it mounted, so nothing would fire the watcher. Offer them to the app once.
+    this.queueSave();
   },
 
   beforeUnmount() {
     clearTimeout(this.confirmTimer);
     clearTimeout(this.flashTimer);
+    clearTimeout(this.saveTimer);
+    document.removeEventListener('keydown', this.onKey);
+    this.closeForm();
   },
 
   watch: {
-    // Picking or creating an app is what resolves the "no longer exists" banner.
+    /** Anything the drawer holds changing is a change to write. */
+    autoKey() {
+      this.queueSave();
+    },
+
+    /**
+     * The panel is Rancher's, so it can close without us: its glass, its Escape, or a route
+     * change. Whichever way it goes, the card that opened it has to stop reading as open.
+     */
+    panelOpen(open) {
+      if (!open && this.builder.form) {
+        this.builder.form = '';
+      }
+    },
+
+    /**
+     * The other direction: removing a card, or clearing the drawer, drops `form` in the shared
+     * state (see builder/state), and the panel showing that card has to go with it.
+     */
+    'builder.form'(name) {
+      if (!name && this.panelOpen) {
+        this.$store.commit('slideInPanel/close', undefined, { root: true });
+      }
+
+      // The panel listens for Escape on itself, which only hears it while focus is inside - and
+      // the focus trap that would put it there is deliberately off, so that the drawer beside it
+      // stays usable. Escape has to be listened for where the focus actually is instead.
+      document.removeEventListener('keydown', this.onKey);
+
+      if (name) {
+        document.addEventListener('keydown', this.onKey);
+      }
+    },
+
+    // Picking or creating an app is what resolves the "no longer exists" banner, and it is
+    // also what decides which files the drawer is showing.
     'builder.app'(app) {
       if (app) {
         this.gone = '';
       }
+
+      this.showAppTemplates();
     },
 
     /**
@@ -142,8 +199,23 @@ export default {
       return out;
     },
 
+    /** Whether Rancher's slide-in panel is showing anything, ours or somebody else's. */
+    panelOpen() {
+      return this.$store.getters['slideInPanel/isOpen'];
+    },
+
+    /**
+     * The apps, and one row that is not an app.
+     *
+     * Making a new one is the same decision as picking an existing one - "which app am I
+     * collecting into" - so it belongs in the same control rather than beside it as a button
+     * competing for the same answer. The sentinel never reaches the state; see pickApp.
+     */
     appOptions() {
-      return this.apps.map((app) => ({ label: app.metadata.name, value: app.metadata.name }));
+      return [
+        ...this.apps.map((app) => ({ label: app.metadata.name, value: app.metadata.name })),
+        { label: this.t('appsPlus.builder.newApp'), value: NEW_APP },
+      ];
     },
 
     /** The app being built, once it exists in the cluster. Null while a new one is being named. */
@@ -151,10 +223,24 @@ export default {
       return this.apps.find((app) => app.metadata?.name === this.builder.app) || null;
     },
 
-    canSave() {
-      // The loaded app, not just a remembered name: Save dispatches a write to it, and a name
-      // with nothing behind it turns Save into an apiserver error.
-      return !!this.selectedApp && this.builder.templates.length > 0 && !this.saving;
+    /**
+     * Everything a save would write, as one string.
+     *
+     * Watched rather than watching the pieces, so that one change is one save however many
+     * fields it touched - a toggle rewrites the YAML, adds a value and adds a label.
+     */
+    autoKey() {
+      return JSON.stringify({
+        app:       this.builder.app,
+        templates: this.builder.templates.map((template) => [template.name, template.content, !!template.saved]),
+        values:    this.builder.values,
+        labels:    this.builder.labels,
+      });
+    },
+
+    /** The cards that are not yet in the app - what a save would add. */
+    collected() {
+      return this.builder.templates.filter((template) => !template.saved);
     },
 
     style() {
@@ -179,6 +265,44 @@ export default {
       closeBuilder();
     },
 
+    /**
+     * Picking a row: an app, or the one that is not an app.
+     *
+     * Bound to the event rather than v-model so the sentinel is never written into the state -
+     * a `builder.app` of `__new__` is a name every other reader would try to look up.
+     */
+    pickApp(value) {
+      if (value === NEW_APP) {
+        this.creating = true;
+
+        return;
+      }
+
+      this.builder.app = value || '';
+    },
+
+    /** Put the selected app's own files in the drawer, beside whatever is being collected. */
+    showAppTemplates() {
+      const app = this.selectedApp;
+
+      if (!app) {
+        dropAppTemplates();
+
+        return;
+      }
+
+      loadAppTemplates(app.spec?.templates || [], app.spec?.values || {}, app.spec?.valueLabels || {});
+
+      // What the app already holds - not what the drawer would write. Recorded so that opening
+      // the drawer on an app does not write it back to itself, while a file collected before
+      // the app was picked still reads as a difference and gets saved.
+      this.lastWritten = JSON.stringify({
+        templates:   app.spec?.templates || [],
+        values:      app.spec?.values || {},
+        valueLabels: app.spec?.valueLabels || {},
+      });
+    },
+
     toggle(name) {
       this.expanded = this.expanded === name ? null : name;
     },
@@ -194,6 +318,57 @@ export default {
         this.expanded = null;
       }
     },
+
+    /**
+     * Open the resource's edit page in Rancher's own slide-in panel.
+     *
+     * The same drawer "Show Configuration" uses - `slideInPanel/open` with a component and its
+     * props - rather than an overlay of this extension's own. It is the panel people already
+     * know: it slides from the right, darkens the page behind it, closes on its glass, on
+     * Escape and on a route change, and it is where a Rancher user looks for this kind of thing.
+     *
+     * The focus trap is off on purpose. Every other user of this panel is a dead end you read
+     * and dismiss; this one is half of a job whose other half is the builder drawer beside it,
+     * and trapping focus would make the cards unreachable while the page they belong to is open.
+     */
+    openForm(name) {
+      const template = this.builder.templates.find((t) => t.name === name);
+
+      if (!template) {
+        return;
+      }
+
+      this.builder.form = name;
+      this.$store.commit('slideInPanel/open', {
+        component:      ResourceForm,
+        componentProps: {
+          template,
+          title:             name,
+          width:             'wide',
+          height:            'full',
+          disableFocusTrap:  true,
+          // Real navigation closes it; the page's own tabs do not. Rancher's Tabbed writes the
+          // selected tab into the URL hash, and the panel's default is to close on any hash or
+          // query change - so opening a form whose first tab announced itself closed the panel
+          // that was showing it, a few hundred milliseconds after it appeared.
+          closeOnRouteChange: ['name', 'params'],
+          returnFocusSelector: `[data-template="${ CSS.escape(name) }"] .card__form`,
+        },
+      }, { root: true });
+    },
+
+    closeForm() {
+      this.builder.form = '';
+      this.$store.commit('slideInPanel/close', undefined, { root: true });
+    },
+
+    /** Escape closes our own page, and only ours - another panel's is not ours to dismiss. */
+    onKey(event) {
+      if (event.key === 'Escape' && this.builder.form) {
+        this.closeForm();
+      }
+    },
+
 
     // Wrapped rather than bound straight from the import: the template only reaches what is on
     // the instance, and `@click="clearStaged"` silently did nothing.
@@ -215,7 +390,6 @@ export default {
       this.confirmClear = false;
       clearStaged();
       this.expanded = null;
-      this.saved = null;
     },
 
     /**
@@ -228,7 +402,7 @@ export default {
       this.$router.push({
         name:   DETAIL_ROUTE,
         params: {
-          product: PRODUCT_NAME, cluster: BLANK_CLUSTER, resource: APP, id: this.saved.app
+          product: PRODUCT_NAME, cluster: BLANK_CLUSTER, resource: APP, id: this.builder.app
         },
       });
     },
@@ -239,7 +413,7 @@ export default {
         params: {
           product: PRODUCT_NAME, cluster: BLANK_CLUSTER, resource: APP_INSTANCE
         },
-        query: { [APP_QUERY]: this.saved.app },
+        query: { [APP_QUERY]: this.builder.app },
       });
     },
 
@@ -289,49 +463,117 @@ export default {
     },
 
     /**
-     * Write what is staged into the selected app.
+     * What the app should hold, given what the drawer is showing.
      *
-     * Templates are appended rather than replacing what the app already has, and a name that
-     * collides gets a number - adding to an app twice is the normal way this gets used, and the
-     * second batch should not quietly delete the first.
+     * Three groups. Files the app has and the drawer still shows are kept, carrying whatever
+     * was edited in them; a file the drawer no longer shows is left out, which is what removing
+     * its card has to mean once the drawer is showing the app rather than only a collection.
+     * Files that are new are appended, and a name that collides gets a number.
+     *
+     * The values are the drawer's rather than a merge under the app's: they were loaded from
+     * the app and have been on screen ever since, so what the drawer holds is what somebody has
+     * decided - including a value they turned off, which a merge would quietly put back.
      */
-    async save() {
+    specFor(app) {
+      const existing = app.spec?.templates || [];
+      const edited = new Map(this.builder.templates.filter((template) => template.saved)
+        .map((template) => [template.name, template.content]));
+
+      const kept = existing
+        .filter((template) => edited.has(template.name))
+        .map((template) => ({ ...template, content: edited.get(template.name) }));
+
+      const taken = new Set(kept.map((template) => template.name));
+      const renamed = new Map();
+
+      const added = this.collected.map((template) => {
+        let name = template.name;
+
+        for (let i = 2; taken.has(name); i++) {
+          name = template.name.replace(/\.yaml$/, `-${ i }.yaml`);
+        }
+
+        taken.add(name);
+
+        if (name !== template.name) {
+          renamed.set(template.name, name);
+        }
+
+        return { name, content: template.content };
+      });
+
+      return {
+        renamed,
+        spec: {
+          templates:   [...kept, ...added],
+          values:      { ...this.builder.values },
+          valueLabels: { ...this.builder.labels },
+        },
+      };
+    },
+
+    /**
+     * Write, a moment after the last change rather than on every one.
+     *
+     * A toggle is one change; typing in the YAML editor is one per keystroke. The delay is what
+     * turns the second into a save, and it is short enough that closing the drawer straight
+     * after a toggle still lands - the write is dispatched, not deferred to a moment that may
+     * never come.
+     */
+    queueSave() {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = setTimeout(() => this.persist(), SAVE_DELAY);
+    },
+
+    /**
+     * Put what the drawer is showing into the app.
+     *
+     * Fetched fresh each time rather than saved through the copy the list has, because the
+     * drawer outlives every page and the app may have been edited on one of them. Compared
+     * against what was last written before saving, so that reloading the app's own files - or
+     * marking them saved below - cannot start a loop of writes that change nothing.
+     */
+    async persist() {
+      if (!this.selectedApp || this.saving) {
+        return;
+      }
+
       this.saving = true;
       this.error = '';
-      this.saved = null;
 
       try {
         const app = await this.$store.dispatch('management/find', {
           type: APP, id: this.builder.app, opt: { force: true },
         });
 
-        const existing = app.spec?.templates || [];
-        const taken = new Set(existing.map((template) => template.name));
-        const added = this.builder.templates.map((template) => {
-          let name = template.name;
+        const { spec, renamed } = this.specFor(app);
+        const signature = JSON.stringify(spec);
 
-          for (let i = 2; taken.has(name); i++) {
-            name = template.name.replace(/\.yaml$/, `-${ i }.yaml`);
+        if (signature !== this.lastWritten) {
+          app.spec = { ...app.spec, ...spec };
+
+          await app.save();
+
+          this.lastWritten = signature;
+          await this.loadApps();
+        }
+
+        // Everything on screen is in the app now, so the next change edits rather than appends.
+        this.builder.templates.forEach((template) => {
+          const name = renamed.get(template.name);
+
+          if (name) {
+            if (this.builder.form === template.name) {
+              this.builder.form = name;
+            }
+
+            template.name = name;
           }
 
-          taken.add(name);
-
-          return { name, content: template.content };
+          template.saved = true;
         });
 
-        app.spec = {
-          ...app.spec,
-          templates:   [...existing, ...added],
-          // Under what the app already has: a default somebody set outranks one an import guessed.
-          values:      { ...this.builder.values, ...(app.spec?.values || {}) },
-          valueLabels: { ...this.builder.labels, ...(app.spec?.valueLabels || {}) },
-        };
-
-        await app.save();
-
-        this.saved = { app: this.builder.app, message: this.t('appsPlus.builder.saved', { count: added.length, app: this.builder.app }) };
-        clearStaged();
-        await this.loadApps();
+        this.savedAt = Date.now();
       } catch (e) {
         this.error = e?.message || 'Could not save.';
       } finally {
@@ -416,20 +658,14 @@ export default {
           drawer's own context and moves with the field it belongs to.
         -->
         <LabeledSelect
-          v-model:value="builder.app"
+          :value="builder.app"
           :options="appOptions"
           :searchable="true"
           :append-to-body="false"
           :label="t('appsPlus.builder.app')"
           :placeholder="t('appsPlus.builder.appPlaceholder')"
+          @update:value="pickApp"
         />
-        <RcButton
-          variant="tertiary"
-          class="mt-5"
-          @click="creating = true"
-        >
-          {{ t('appsPlus.builder.newApp') }}
-        </RcButton>
       </template>
     </div>
 
@@ -458,29 +694,6 @@ export default {
       :label="t('appsPlus.builder.skipped', notice)"
       @close="dismissNotice(notice.skipped)"
     />
-    <Banner
-      v-if="saved"
-      color="success"
-    >
-      <div class="builder__saved">
-        <span>{{ saved.message }}</span>
-        <span class="builder__next">
-          <RcButton
-            variant="tertiary"
-            @click="openApp"
-          >
-            {{ t('appsPlus.builder.openApp') }}
-          </RcButton>
-          <RcButton
-            variant="tertiary"
-            @click="installApp"
-          >
-            {{ t('appsPlus.action.createInstance') }}
-          </RcButton>
-        </span>
-      </div>
-    </Banner>
-
     <div class="builder__list">
       <p
         v-if="!builder.templates.length"
@@ -519,11 +732,22 @@ export default {
               <span class="card__text">
                 <span class="card__name">{{ template.name }}</span>
                 <span
-                  v-if="template.source"
+                  v-if="template.source || template.saved"
                   class="card__source"
-                >{{ template.source }}</span>
+                >{{ template.saved ? t('appsPlus.builder.inApp') : template.source }}</span>
               </span>
             </button>
+
+            <!-- The resource's own edit page, over the whole window: the drawer is too narrow
+                 to be a form, and this is the page somebody already knows. -->
+            <RcButton
+              variant="tertiary"
+              class="card__form"
+              :aria-label="t('appsPlus.form.open') + ' ' + template.name"
+              @click="openForm(template.name)"
+            >
+              {{ t('appsPlus.form.open') }}
+            </RcButton>
 
             <RcButton
               variant="tertiary"
@@ -591,19 +815,33 @@ export default {
     <footer class="builder__foot">
       <RcButton
         variant="tertiary"
-        :disabled="!builder.templates.length"
+        :disabled="!collected.length"
         :class="{ 'builder__clear-confirm': confirmClear }"
         @click="clearAll"
       >
-        {{ confirmClear ? t('appsPlus.builder.clearConfirm', { count: builder.templates.length }) : t('appsPlus.builder.clear') }}
+        {{ confirmClear ? t('appsPlus.builder.clearConfirm', { count: collected.length }) : t('appsPlus.builder.clear') }}
       </RcButton>
-      <RcButton
-        variant="primary"
-        :disabled="!canSave"
-        @click="save"
+      <span class="builder__status">
+        {{ saving ? t('appsPlus.builder.saving') : (savedAt ? t('appsPlus.builder.autosaved') : '') }}
+      </span>
+
+      <span
+        v-if="selectedApp"
+        class="builder__next"
       >
-        {{ t('appsPlus.builder.save', { count: builder.templates.length }) }}
-      </RcButton>
+        <RcButton
+          variant="tertiary"
+          @click="openApp"
+        >
+          {{ t('appsPlus.builder.openApp') }}
+        </RcButton>
+        <RcButton
+          variant="tertiary"
+          @click="installApp"
+        >
+          {{ t('appsPlus.action.createInstance') }}
+        </RcButton>
+      </span>
     </footer>
 
     <!-- The edge, four pixels wide, with no paint of its own so the border stays the only line. -->
@@ -611,6 +849,7 @@ export default {
       class="builder__grip"
       @mousedown="onGrab"
     />
+
   </div>
 </template>
 
@@ -620,11 +859,21 @@ export default {
   top:            0;
   left:           0;
   bottom:         0;
-  // Above the page it borrows its width from, below every overlay the shell floats: modals
-  // (53), dropdowns (55) and tooltips (57) all outrank it, so a confirm dialog is never
-  // clipped behind the drawer's edge. The page itself cannot overlap either way - the
-  // drawer's width is padding taken out of .dashboard-root, not paint over it.
-  z-index:        50;
+  /**
+   * Above everything, which for this drawer is the point.
+   *
+   * It is not an overlay on a page, it is a second surface beside one: it outlives every page,
+   * and the edit pages it opens are Rancher's own full-height slide-in panel, which paints its
+   * glass at 101 and itself at 102. Below those the drawer would be dimmed and unreachable
+   * while the page it opened is up, and using the two together is the whole flow.
+   *
+   * The cost is real and worth naming: this now outranks the shell's modals (54) and dropdown
+   * overlays (56), so a dialog opened from the page underneath is painted behind the drawer's
+   * strip rather than over it. Dropdowns *inside* the drawer are unaffected - they stack in its
+   * own context - and the page itself still cannot overlap, because the drawer's width is
+   * padding taken out of .dashboard-root rather than paint over it.
+   */
+  z-index:        103;
   display:        flex;
   flex-direction: column;
   background:     var(--body-bg);
@@ -670,6 +919,13 @@ export default {
     gap:     8px;
   }
 
+  // Between Clear and the two ways onward, taking the slack so both ends stay put.
+  &__status {
+    flex:      1;
+    color:     var(--muted);
+    font-size: 11px;
+  }
+
   &__empty {
     color:      var(--muted);
     font-size:  12px;
@@ -679,7 +935,7 @@ export default {
 
   &__foot {
     display:         flex;
-    justify-content: space-between;
+    align-items:     center;
     gap:             8px;
     padding:         12px 14px;
     border-top:      1px solid var(--border);
@@ -780,6 +1036,8 @@ export default {
   }
 
   &__remove { flex-shrink: 0; }
+
+  &__form { flex-shrink: 0; }
 
   &__dangling {
     margin:    0;

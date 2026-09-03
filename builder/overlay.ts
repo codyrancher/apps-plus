@@ -12,6 +12,7 @@
 import { createApp } from 'vue';
 import BuilderPanel from '../components/BuilderPanel.vue';
 import { builder } from './state';
+import { adoptDashboardContext, dashboardApp } from './adopt';
 
 /** Where the panel is mounted. Identified so a second bundle load finds it instead of stacking. */
 const HOST_ID = 'apps-plus-builder';
@@ -20,10 +21,6 @@ const HOST_ID = 'apps-plus-builder';
 const RESERVATION_ID = 'apps-plus-builder-reservation';
 
 let panel: any = null;
-
-function dashboardApp(): any {
-  return (document.querySelector('#app') as any)?.__vue_app__ || null;
-}
 
 /**
  * Take the drawer's width out of the dashboard rather than covering it.
@@ -45,29 +42,14 @@ function reserve(): void {
     document.head.appendChild(sheet);
   }
 
-  sheet.textContent = builder.open ? `.dashboard-root { padding-left: ${ builder.width }px; }` : '';
-}
-
-/**
- * Copy the dashboard's context onto our app: its components, directives, injections and globals.
- *
- * Without this the panel renders nothing recognisable - `t()` is undefined, `$store` is
- * undefined, and every shell component it uses is an unknown tag.
- */
-function adoptDashboardContext(app: any): void {
-  const host = dashboardApp();
-
-  if (!host) {
-    return;
-  }
-
-  Object.assign(app._context.components, host._context.components);
-  Object.assign(app._context.directives, host._context.directives);
-  Object.assign(app._context.provides, host._context.provides);
-  Object.defineProperties(
-    app.config.globalProperties,
-    Object.getOwnPropertyDescriptors(host.config.globalProperties),
-  );
+  // Rancher's slide-in panel is fixed and anchored right, so it knows nothing about the
+  // padding above and slides underneath the drawer - taking its title, its close button and the
+  // left edge of whatever it is showing with it. Reserved the same way, in the same sheet.
+  sheet.textContent = builder.open ? `
+    .dashboard-root { padding-left: ${ builder.width }px; }
+    #slides .slide-in { max-width: calc(100vw - ${ builder.width }px); }
+    #slides .slide-in-glass { left: ${ builder.width }px; width: calc(100vw - ${ builder.width }px); }
+  ` : '';
 }
 
 /** The panel, made the first time it is wanted. */

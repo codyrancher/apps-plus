@@ -244,8 +244,11 @@ export default {
               {{ t('appsPlus.list.needsAttention', { count: attentionCount(group.group) }) }}
             </span>
           </div>
+          <!-- One line, and the whole thing on hover. A description long enough to wrap used to
+               push the group header past the row it heads and cover the installation under it. -->
           <div
             v-if="appFor(group.group)?.description"
+            v-clean-tooltip="appFor(group.group).description"
             class="description text-muted text-small"
           >
             {{ appFor(group.group).description }}
@@ -306,9 +309,21 @@ export default {
       flex-direction: row;
       justify-content: space-between;
       align-items: center;
+      // The shell sizes a group header for a single line, and anything taller spills out of the
+      // row and paints over the installation underneath it - which reads as the description
+      // wrapping around the row, and silently swallows the clicks meant for the links in it.
+      // The description below is kept to one line, so the header fits what it is given.
+      min-height: 40px;
 
+      // The name and the description share the one line the shell gives a group header. Stacked,
+      // the description hung below the row and painted over the installation under it.
       .group-tab {
         max-width: calc(100% - 260px);
+        min-width: 0;
+        display: flex;
+        flex-direction: row;
+        align-items: baseline;
+        gap: 10px;
       }
 
       .app-name {
@@ -316,6 +331,7 @@ export default {
         flex-direction: row;
         align-items: center;
         line-height: 30px;
+        flex-shrink: 0;
 
         // The name never gives way to the badge: shrinking it force-broke "loop-web" in half,
         // and of the two the badge is the one that can afford to clip.
@@ -324,8 +340,13 @@ export default {
         }
       }
 
+      // The full text is on the tooltip; this is the one line there is room for.
       .description {
-        margin-top: -6px;
+        flex: 1;
+        min-width: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
 
       // The same pair of tokens as the Warning state pill a few columns over: near-white on

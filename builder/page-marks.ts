@@ -8,12 +8,9 @@
 
 import { createApp } from 'vue';
 import PageMarks from '../components/PageMarks.vue';
+import { adoptDashboardContext, dashboardApp } from './adopt';
 
 const HOST_ID = 'apps-plus-page-marks';
-
-function dashboardApp(): any {
-  return (document.querySelector('#app') as any)?.__vue_app__ || null;
-}
 
 let mounted = false;
 
@@ -55,14 +52,7 @@ export function initPageMarks(): void {
 
     const app = createApp(PageMarks);
 
-    Object.assign(app._context.components, host._context.components);
-    Object.assign(app._context.directives, host._context.directives);
-    Object.assign(app._context.provides, host._context.provides);
-    Object.defineProperties(
-      app.config.globalProperties,
-      Object.getOwnPropertyDescriptors(host.config.globalProperties),
-    );
-
+    adoptDashboardContext(app);
     app.mount(el);
     mounted = true;
   };

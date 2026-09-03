@@ -1,10 +1,11 @@
 <script>
 import ResourceTabs from '@shell/components/form/ResourceTabs';
+import SortableTable from '@shell/components/SortableTable';
 import Tab from '@shell/components/Tabbed/Tab';
 import { Banner } from '@components/Banner';
 import { RcButton } from '@components/RcButton';
 import {
-  FLEET_BUNDLE, APP, PROVISIONING_CLUSTER, REGISTRATION_TOKEN
+  FLEET_BUNDLE, FLEET_BUNDLE_DEPLOYMENT, APP, PROVISIONING_CLUSTER, REGISTRATION_TOKEN, steveType
 } from '../config/types';
 import { undeclaredWarnings } from '../render';
 
@@ -19,7 +20,7 @@ export default {
   name: 'DetailAppInstance',
 
   components: {
-    ResourceTabs, Tab, Banner, RcButton
+    ResourceTabs, Tab, Banner, RcButton, SortableTable
   },
 
   props: {
@@ -37,6 +38,7 @@ export default {
     await Promise.all([
       this.$store.dispatch('management/findAll', { type: APP }),
       this.$store.dispatch('management/findAll', { type: FLEET_BUNDLE }),
+      this.$store.dispatch('management/findAll', { type: FLEET_BUNDLE_DEPLOYMENT }).catch(() => []),
       this.$store.dispatch('management/findAll', { type: PROVISIONING_CLUSTER }).catch(() => []),
     ]);
 
@@ -99,12 +101,76 @@ export default {
       return state === 'warning' ? 'warning' : 'info';
     },
 
-    summary() {
-      return this.value.bundleSummary;
+    /**
+     * Deployed resources, each with a link to the cluster it is on.
+     *
+     * Fleet reports a cluster by the name of its provisioning.cattle.io Cluster, while the
+     * explorer is addressed by the management cluster id, so the two have to be matched up
+     * here - `status.clusterName` on the provisioning cluster is that id.
+     */
+    deployedHeaders() {
+      return [
+        {
+          name: 'state', labelKey: 'appsPlus.deployed.state', value: 'stateLabel', width: 125, sort: ['ready', 'kind', 'name']
+        },
+        {
+          name: 'kind', labelKey: 'appsPlus.deployed.kind', value: 'kind', sort: ['kind', 'name']
+        },
+        {
+          name: 'name', labelKey: 'appsPlus.deployed.name', value: 'name', sort: ['name']
+        },
+        {
+          name: 'namespace', labelKey: 'appsPlus.deployed.namespace', value: 'namespace', sort: ['namespace', 'name']
+        },
+        {
+          name: 'cluster', labelKey: 'appsPlus.deployed.cluster', value: 'clusterName', sort: ['clusterName', 'name']
+        },
+      ];
     },
 
-    bundleLocation() {
-      return this.value.bundle?.detailLocation || null;
+    deployedRows() {
+      let clusters = [];
+
+      try {
+        clusters = this.$store.getters['management/all'](PROVISIONING_CLUSTER) || [];
+      } catch {
+        clusters = [];
+      }
+
+      const idByName = {};
+
+      clusters.forEach((cluster) => {
+        const id = cluster.status?.clusterName;
+
+        if (id) {
+          idByName[cluster.metadata?.name] = id;
+        }
+      });
+
+      return this.value.deployedResources.map((row) => {
+        const id = idByName[row.clusterName];
+        const resource = steveType({ apiVersion: row.apiVersion, kind: row.kind });
+        // A namespaced resource and a cluster-scoped one are different routes in the explorer,
+        // and the resource is only addressable at all once its cluster has a management id.
+        const to = !id ? null : row.namespace ? {
+          name:   'c-cluster-product-resource-namespace-id',
+          params: {
+            cluster: id, product: 'explorer', resource, namespace: row.namespace, id: row.name
+          },
+        } : {
+          name:   'c-cluster-product-resource-id',
+          params: {
+            cluster: id, product: 'explorer', resource, id: row.name
+          },
+        };
+
+        return {
+          ...row,
+          to,
+          stateLabel: row.ready ? this.t('appsPlus.deployed.ready') : this.t('appsPlus.deployed.notReady'),
+          clusterTo:  id ? { name: 'c-cluster-explorer', params: { cluster: id } } : null,
+        };
+      });
     },
 
     cluster() {
@@ -126,50 +192,6 @@ export default {
       :color="stateBannerColor"
       :label="value.stateDescription"
     />
-
-    <div class="row mb-20">
-      <div class="col span-3">
-        <label class="text-label">{{ t('appsPlus.instance.app') }}</label>
-        <div>
-          <router-link
-            v-if="value.app?.detailLocation"
-            :to="value.app.detailLocation"
-          >
-            {{ value.appDisplay }}
-          </router-link>
-          <span v-else>{{ value.appDisplay }}</span>
-        </div>
-      </div>
-      <div class="col span-3">
-        <label class="text-label">
-          {{ value.provisionsCluster ? t('appsPlus.instance.ownedCluster') : t('appsPlus.instance.targets') }}
-        </label>
-        <div>{{ value.targetDisplay }}</div>
-      </div>
-      <div class="col span-3">
-        <label class="text-label">{{ t('appsPlus.instance.namespace') }}</label>
-        <div>{{ value.targetNamespace }}</div>
-      </div>
-      <div class="col span-3">
-        <label class="text-label">{{ t('appsPlus.instance.bundle') }}</label>
-        <div>
-          <router-link
-            v-if="bundleLocation"
-            :to="bundleLocation"
-          >
-            {{ value.bundleName }}
-          </router-link>
-          <span
-            v-else
-            class="text-muted"
-          >{{ value.bundleName }}</span>
-          <span
-            v-if="summary"
-            class="ml-5 text-muted"
-          >({{ value.readyDisplay }} ready)</span>
-        </div>
-      </div>
-    </div>
 
     <div
       v-if="value.provisionsCluster"
@@ -203,7 +225,11 @@ export default {
       </template>
     </div>
 
-    <ResourceTabs :value="value">
+    <ResourceTabs
+      :value="value"
+      :need-events="false"
+      :need-related="false"
+    >
       <Tab
         v-if="value.provisionsCluster"
         name="cluster"
@@ -216,6 +242,68 @@ export default {
           </div>
           <pre class="rendered__body">{{ value.renderedClusterTemplate }}</pre>
         </div>
+      </Tab>
+
+      <Tab
+        name="deployed"
+        :label="t('appsPlus.instance.deployed')"
+        :weight="10.7"
+      >
+        <SortableTable
+          v-if="deployedRows.length"
+          :rows="deployedRows"
+          :headers="deployedHeaders"
+          key-field="key"
+          default-sort-by="kind"
+          :table-actions="false"
+          :row-actions="false"
+          :paging="true"
+        >
+          <template #cell:state="{row}">
+            <span :class="row.ready ? 'deployed__state--ready' : 'deployed__state--not'">
+              {{ row.stateLabel }}
+            </span>
+            <div
+              v-if="row.message"
+              class="text-muted text-small"
+            >
+              {{ row.message }}
+            </div>
+          </template>
+
+          <template #cell:name="{row}">
+            <router-link
+              v-if="row.to"
+              :to="row.to"
+            >
+              {{ row.name }}
+            </router-link>
+            <span v-else>{{ row.name }}</span>
+          </template>
+
+          <template #cell:namespace="{row}">
+            <span v-if="row.namespace">{{ row.namespace }}</span>
+            <span
+              v-else
+              class="text-muted"
+            >&mdash;</span>
+          </template>
+
+          <template #cell:cluster="{row}">
+            <router-link
+              v-if="row.clusterTo"
+              :to="row.clusterTo"
+            >
+              {{ row.clusterName }}
+            </router-link>
+            <span v-else>{{ row.clusterName }}</span>
+          </template>
+        </SortableTable>
+        <Banner
+          v-else
+          color="info"
+          :label="t('appsPlus.deployed.none')"
+        />
       </Tab>
 
       <Tab
@@ -314,6 +402,18 @@ export default {
 </template>
 
 <style lang="scss" scoped>
+.deployed__state {
+  font-weight: 600;
+}
+
+.deployed__state--ready {
+  color: var(--success);
+}
+
+.deployed__state--not {
+  color: var(--warning);
+}
+
 .cluster-panel {
   border: 1px solid var(--border);
   border-radius: var(--border-radius);

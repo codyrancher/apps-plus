@@ -47,7 +47,8 @@ export function init($plugin: IPlugin, store: any) {
     showAge:                  false,
     canYaml:                  true,
     listCreateButtonLabelKey: 'appsPlus.action.createApp',
-  });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  } as any);
 
   configureType(APP_INSTANCE, {
     isCreatable: true,

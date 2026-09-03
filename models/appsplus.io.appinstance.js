@@ -1,7 +1,8 @@
 import jsyaml from 'js-yaml';
 import SteveModel from '@shell/plugins/steve/steve-class';
 import {
-  APP, FLEET_BUNDLE, FLEET_CLUSTER, BUNDLE_PREFIX, DEFAULT_WORKSPACE, DEFAULT_TARGET_NAMESPACE,
+  APP, FLEET_BUNDLE, FLEET_BUNDLE_DEPLOYMENT, FLEET_CLUSTER, BUNDLE_PREFIX, DEFAULT_WORKSPACE,
+  DEFAULT_TARGET_NAMESPACE,
   PROVISIONING_CLUSTER, PROVISION_WORKSPACE, PRODUCT_NAME, BLANK_CLUSTER, LIST_ROUTE, steveType,
   ADD_TO_APP_ACTION
 } from '../config/types';
@@ -216,7 +217,11 @@ export default class AppInstance extends SteveModel {
 
     const source = this.app?.spec?.clusterTemplate?.trim() || DEFAULT_CLUSTER_TEMPLATE;
 
-    return substitute(source, { ...DEFAULT_CLUSTER_VALUES, ...mergeValues(this.app, this) });
+    return substitute(
+      source,
+      { ...DEFAULT_CLUSTER_VALUES, ...mergeValues(this.app, this) },
+      { ...DEFAULT_CLUSTER_VALUES, ...(this.app?.spec?.values || {}) },
+    );
   }
 
   // ---------------------------------------------------------------- state
@@ -240,6 +245,92 @@ export default class AppInstance extends SteveModel {
 
   get bundle() {
     return this.bundles[0] || null;
+  }
+
+  /**
+   * What actually landed, per cluster.
+   *
+   * The resources an instance deploys live on the *downstream* clusters, so nothing in the
+   * local cluster lists them and the shell's own Related Resources tab - which only ever looks
+   * where the instance itself is - cannot show them. Fleet's BundleDeployment is the one
+   * record that crosses the gap: there is one per cluster the Bundle reaches, in that
+   * cluster's Fleet namespace, and it names every resource applied there.
+   */
+  /**
+   * The glance line under the title: what this is an installation of, where it went, and the
+   * Bundle carrying it. The same four facts the page used to repeat in a row of its own - the
+   * masthead already has a place for them, and it lines them up with Age and the labels.
+   */
+  get details() {
+    const t = this.$rootGetters['i18n/t'];
+    const link = (to, content) => (to ? {
+      formatter:     'Link',
+      formatterOpts: { to, row: {}, options: { internal: true } },
+      content,
+    } : { content });
+
+    return [
+      { label: t('appsPlus.instance.app'), ...link(this.app?.detailLocation, this.appDisplay) },
+      {
+        label: t(this.provisionsCluster ? 'appsPlus.instance.ownedCluster' : 'appsPlus.instance.targets'),
+        ...link(this.provisionedCluster?.detailLocation, this.targetDisplay),
+      },
+      { label: t('appsPlus.instance.namespace'), content: this.targetNamespace },
+      {
+        label: t('appsPlus.instance.bundle'),
+        ...link(
+          this.bundle?.detailLocation,
+          this.bundleSummary ? `${ this.bundleName } (${ this.readyDisplay } ready)` : this.bundleName,
+        ),
+      },
+    ];
+  }
+
+  get bundleDeployments() {
+    try {
+      return this.$rootGetters['management/all'](FLEET_BUNDLE_DEPLOYMENT)
+        .filter((deployment) => deployment.metadata?.name === this.bundleName);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * One row per deployed resource, carrying the cluster it is on.
+   *
+   * A resource Fleet is unhappy about is listed in `nonReadyStatus` with a message; everything
+   * else it applied is ready, so the two lists together are the state of the deployment.
+   */
+  get deployedResources() {
+    return this.bundleDeployments.flatMap((deployment) => {
+      const labels = deployment.metadata?.labels || {};
+      const clusterName = labels['fleet.cattle.io/cluster'] || '';
+      const clusterNamespace = labels['fleet.cattle.io/cluster-namespace'] || '';
+      const notReady = {};
+
+      (deployment.status?.nonReadyStatus || []).forEach((entry) => {
+        const key = `${ entry.kind }/${ entry.namespace || '' }/${ entry.name }`;
+
+        notReady[key] = (entry.summary?.message || []).join(', ') || entry.summary?.state || '';
+      });
+
+      return (deployment.status?.resources || []).map((resource) => {
+        const key = `${ resource.kind }/${ resource.namespace || '' }/${ resource.name }`;
+        const message = notReady[key];
+
+        return {
+          key:      `${ clusterName }/${ key }`,
+          kind:     resource.kind,
+          name:     resource.name,
+          namespace: resource.namespace || '',
+          apiVersion: resource.apiVersion || '',
+          clusterName,
+          clusterNamespace,
+          message:  message || '',
+          ready:    !message,
+        };
+      });
+    });
   }
 
   /** The Bundle summaries added up, so an instance spanning two workspaces reads as one. */
@@ -569,7 +660,7 @@ export default class AppInstance extends SteveModel {
       values.cloudCredential = await this.cloudCredentialId();
     }
 
-    const rendered = substitute(source, values);
+    const rendered = substitute(source, values, { ...DEFAULT_CLUSTER_VALUES, ...(app?.spec?.values || {}) });
     let documents;
 
     try {

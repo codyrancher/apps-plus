@@ -66,17 +66,6 @@ export default {
 
 <template>
   <div>
-    <div class="row mb-20">
-      <div class="col span-6">
-        <label class="text-label">{{ t('appsPlus.headers.templates') }}</label>
-        <div>{{ templates.length }}</div>
-      </div>
-      <div class="col span-6">
-        <label class="text-label">{{ t('appsPlus.headers.instances') }}</label>
-        <div>{{ instances.length }}</div>
-      </div>
-    </div>
-
     <rc-button
       variant="secondary"
       class="mb-20"

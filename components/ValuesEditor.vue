@@ -1,5 +1,6 @@
 <script>
 import KeyValue from '@shell/components/form/KeyValue';
+import { typedOverrides } from '../render';
 
 /**
  * The values editor, used by both the App's Default Values and an installation's Values.
@@ -68,6 +69,24 @@ export default {
     },
 
     /**
+     * The values as text, which is the only thing KeyValue can hold.
+     *
+     * A default keeps the type it had in the YAML - see applyToggle, which is what lets a
+     * `replicas` of 2 go back into the template as 2 rather than as '2'. KeyValue base64-decodes
+     * every value it is handed, so a number reached `string.replace is not a function`, and
+     * because that throws inside a computed the table went on rendering the rows it had before:
+     * parameterising `replicas` made the Default Values list silently stop updating, with the
+     * error only in the console.
+     */
+    shown() {
+      return Object.entries(this.value || {}).reduce((out, [key, value]) => {
+        out[key] = value === undefined || value === null ? '' : String(value);
+
+        return out;
+      }, {});
+    },
+
+    /**
      * Values that no template refers to any more.
      *
      * A template is edited far more often than the values beside it, so a `${greeting}` that
@@ -99,6 +118,27 @@ export default {
   },
 
   methods: {
+    /**
+     * What was edited, carrying the types of what it was edited from.
+     *
+     * KeyValue hands back a string for every row, so emitting its map as it comes turned every
+     * typed default into text - and this table edits `spec.values`, which is where substitution
+     * learns whether a parameter is a number, a boolean or a string. Retyping a `replicas`
+     * default from 2 to 3 stored the string '3', and the renderer, told the app declared a
+     * string, quoted it: `replicas: '3'`, rejected by the apiserver, with nothing wrong on
+     * screen and no failure until an installation would not apply.
+     *
+     * The same function the deploy path uses for an installation's overrides, because it is the
+     * same problem: text on one side, a declared type on the other. Sharing it is what keeps
+     * the two from drifting.
+     */
+    merged(edited) {
+      // Blank here declares a required parameter rather than asking for the default: this table
+      // is the declaration. See typedOverrides, which is the same function the deploy path runs
+      // over an installation's overrides, where blank means the other thing.
+      return typedOverrides(this.value || {}, edited, true);
+    },
+
     /**
      * Record one key's label, or clear it.
      *
@@ -134,7 +174,7 @@ export default {
   -->
   <KeyValue
     class="values-editor"
-    :value="value"
+    :value="shown"
     :mode="mode"
     :read-allowed="false"
     :as-map="true"
@@ -145,7 +185,7 @@ export default {
     :key-errors="stale"
     :key-placeholder="placeholder"
     :extra-columns="['label']"
-    @update:value="v => $emit('update:value', v)"
+    @update:value="v => $emit('update:value', merged(v))"
   >
     <template #label:label>
       {{ t('appsPlus.values.label') }}

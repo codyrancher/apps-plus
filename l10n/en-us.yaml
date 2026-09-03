@@ -19,7 +19,8 @@ appsPlus:
   fields:
     tab: Customizable
     yamlTab: YAML
-    hint: Turn on a field to let each installation set it. Its current value becomes the default.
+    hint: These are the fields an installation can set. The value shown is what it starts from.
+    none: Nothing here can be changed at installation yet. Open the edit page and turn on the fields each installation should be able to set.
     name: Parameter name
     default: Default value
     search: Another field
@@ -27,11 +28,25 @@ appsPlus:
     unparsed: This template is not valid YAML yet, so its fields cannot be listed.
   pageMarks:
     toggle: Allow editing in installation
+  form:
+    open: Edit page
+    toggleTip: Enable editing when installing the application
+    # No apostrophes anywhere in here: the banner renders its label as HTML, and one comes
+    # back through the translator as a literal &#39;.
+    hint: The edit page Rancher renders for this resource, read-only. Turn on a field to let each installation set it, and the value shown becomes the default.
+    unwired: 'The edit page for a {kind} is shown as it is. Only Deployments and ConfigMaps have their fields mapped to the template so far - use the Customizable list for this one.'
+    unknown: This template does not say what kind of resource it is, so there is no edit page for it.
+    unparsed: This template is not valid YAML yet, so there is no page to render it as.
+    multiple: 'This file holds {count} resources, and an edit page shows one. Use the YAML tab, or split it into a file per resource.'
+    # A lead-in rather than a template with {error} in it: the message is put in the
+    # banner's slot, so that quotes in an apiserver error do not arrive as &#39;.
+    error: 'Rancher could not render an edit page for this resource:'
   builder:
     title: App builder
     app: Building
     appPlaceholder: Choose an app
-    newApp: New app
+    newApp: Create a new app
+    inApp: Already in this app
     newAppPlaceholder: A name for the new app
     create: Create
     add: Add to Application
@@ -41,6 +56,8 @@ appsPlus:
     empty: Nothing collected yet. Go to any resource list, select what belongs, and use Add to Application.
     skipped: 'Not added: {skipped}. This app already has a {kind} with that name (from {kept}), and one app cannot hold both.'
     clear: Clear
+    saving: Saving...
+    autosaved: Changes are saved as you make them
     save: '{count, plural, =0 {Save} one {Save 1 file} other {Save # files}}'
     saved: '{count, plural, one {Added 1 file} other {Added # files}} to {app}.'
     openApp: Open the app
@@ -66,6 +83,15 @@ appsPlus:
     labelPlaceholder: Shown on the install form instead of the key
     override: This installation
     none: This app declares no values. It installs exactly as it is defined.
+  deployed:
+    state: State
+    kind: Type
+    name: Name
+    namespace: Namespace
+    cluster: Cluster
+    ready: Ready
+    notReady: Not Ready
+    none: Nothing deployed yet. Resources appear here once Fleet has applied them to a target cluster.
   action:
     createApp: Create App
     createInstance: Install
@@ -110,6 +136,7 @@ appsPlus:
     valueDefault: 'Blank uses the app default: {value}'
     valueNoDefault: Required
     valueMissing: The app has no default for this, so this installation has to supply it.
+    deployed: Deployed Resources
     preview: Rendered Resources
     previewHint: What this installation deploys, with values substituted.
     bundle: Fleet Bundle

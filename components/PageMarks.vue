@@ -53,8 +53,12 @@ export default {
 
     // Staging changed while sitting on the page: what was probed no longer answers, so start
     // over. Covers staging the open resource (marks appear), and removing its card (they go).
+    //
+    // `form` is in the key so that closing the sheet re-probes rather than restoring what was
+    // on screen before it opened: a switch flicked in the sheet changes the same YAML these
+    // read their on/off state from, and without this they come back still saying `+`.
     this.unwatch = this.$watch(
-      () => [builder.open, builder.app, builder.templates.map((t) => `${ t.kind }:${ t.source }`).join('|')].join('@'),
+      () => [builder.open, builder.app, builder.form, builder.templates.map((t) => `${ t.kind }:${ t.source }`).join('|')].join('@'),
       () => this.reset(),
     );
   },
@@ -75,7 +79,11 @@ export default {
     },
 
     tick() {
-      if (!builder.open || !builder.app || !builder.templates.length) {
+      // The drawer's own edit page is a sheet over the whole window, and these switches are
+      // `position: fixed` - so left drawn they float on top of it beside boxes they have
+      // nothing to do with, and a click toggles a different field than the one it looks
+      // attached to. The sheet has switches of its own; these stand down while it is open.
+      if (!builder.open || !builder.app || !builder.templates.length || builder.form) {
         if (this.marks.length || this.probed) {
           this.reset();
         }
