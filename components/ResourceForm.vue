@@ -318,6 +318,17 @@ export default {
       this.manifest = markRaw(manifest);
       this.steveType = type;
 
+      // Asked before importing, because importing a page that is not there fails as a webpack
+      // module error - `Cannot find module './management.cattle.io.cluster'` - which reads as
+      // something broken rather than as what it is. Plenty of types have no edit page at all: a
+      // management.cattle.io Cluster is one, because Rancher edits clusters through the
+      // provisioning type instead.
+      if (!this.$store.getters['type-map/hasCustomEdit'](type)) {
+        this.notice = this.t('appsPlus.form.noPage', { kind: manifest?.kind || type });
+
+        return;
+      }
+
       try {
         // Asked for by type, the same way the dashboard's own resource pages ask: whatever is
         // registered for this type is what somebody edits it with, including an extension's.

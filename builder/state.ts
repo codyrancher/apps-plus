@@ -442,7 +442,7 @@ export function loadAppTemplates(templates: { name: string; content: string }[],
       // loadAll, not load: a hand-written template is often several resources separated by
       // `---`, and `load` throws on those rather than returning the first. A file holding more
       // than one is grouped as what it is - there is no single kind that describes it.
-      const documents = jsyaml.loadAll(template.content || '').filter((document) => !!document);
+      const documents = jsyaml.loadAll(template.content || '').filter((document: unknown) => !!document);
 
       kind = documents.length === 1 ? String((documents[0] as any)?.kind || '') : MULTIPLE_KIND;
     } catch {
