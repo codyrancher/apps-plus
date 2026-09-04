@@ -291,15 +291,14 @@ export default {
         return;
       }
 
-      loadAppTemplates(app.spec?.templates || [], app.spec?.values || {}, app.spec?.valueLabels || {});
+      loadAppTemplates(app.spec?.templates || [], app.spec?.values || {});
 
       // What the app already holds - not what the drawer would write. Recorded so that opening
       // the drawer on an app does not write it back to itself, while a file collected before
       // the app was picked still reads as a difference and gets saved.
       this.lastWritten = JSON.stringify({
-        templates:   app.spec?.templates || [],
-        values:      app.spec?.values || {},
-        valueLabels: app.spec?.valueLabels || {},
+        templates: app.spec?.templates || [],
+        values:    app.spec?.values || {},
       });
     },
 
@@ -505,9 +504,8 @@ export default {
       return {
         renamed,
         spec: {
-          templates:   [...kept, ...added],
-          values:      { ...this.builder.values },
-          valueLabels: { ...this.builder.labels },
+          templates: [...kept, ...added],
+          values:    { ...this.builder.values },
         },
       };
     },

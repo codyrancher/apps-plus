@@ -434,7 +434,7 @@ function collectDangling(node: any, staged: Map<string, Set<string>>, parentKey:
  * already here for the same reason they do on an add: a default somebody has just typed
  * outranks the one the app was saved with.
  */
-export function loadAppTemplates(templates: { name: string; content: string }[], values: Record<string, unknown>, labels: Record<string, string>): void {
+export function loadAppTemplates(templates: { name: string; content: string }[], values: Record<string, unknown>): void {
   const loaded: StagedTemplate[] = (templates || []).map((template) => {
     let kind = '';
 
@@ -472,7 +472,6 @@ export function loadAppTemplates(templates: { name: string; content: string }[],
     ...builder.templates.filter((template) => !template.saved && !names.has(template.name)),
   ];
   builder.values = { ...values, ...builder.values };
-  builder.labels = { ...labels, ...builder.labels };
 }
 
 /** Forget the app's own files, without touching what has been collected. */

@@ -70,13 +70,11 @@ export default {
     valueRows() {
       const app = this.value.app;
       const defaults = app?.spec?.values || {};
-      const labels = app?.spec?.valueLabels || {};
       const overrides = this.value.spec?.values || {};
       const names = new Set([...Object.keys(defaults), ...Object.keys(overrides)]);
 
       return [...names].sort().map((name) => ({
         name,
-        label:    labels[name] || '',
         default:  defaults[name],
         override: overrides[name],
       }));
@@ -342,12 +340,6 @@ export default {
               :key="row.name"
             >
               <td>
-                <div
-                  v-if="row.label"
-                  class="values-table__label"
-                >
-                  {{ row.label }}
-                </div>
                 <code>{{ row.name }}</code>
               </td>
               <td>
@@ -473,10 +465,6 @@ export default {
     padding: 8px 24px 8px 0;
     border-bottom: 1px solid var(--border);
     vertical-align: top;
-  }
-
-  &__label {
-    font-weight: 600;
   }
 }
 </style>

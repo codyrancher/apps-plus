@@ -272,10 +272,6 @@ export default {
       return this.provisions ? { ...DEFAULT_CLUSTER_VALUES, ...declared } : declared;
     },
 
-    /** The words the app's definer chose for each value, when they chose any. */
-    appLabels() {
-      return this.selectedApp?.spec?.valueLabels || {};
-    },
 
     /**
      * One row per thing this installation can set.
@@ -296,7 +292,6 @@ export default {
 
       return [...names].sort().map((name) => ({
         name,
-        label:   this.appLabels[name] || '',
         current: this.values[name] ?? '',
         // A declared value with an empty default is a value with no default: the key exists
         // because declaring it is what creates the parameter, not because '' answers it.
@@ -539,18 +534,11 @@ export default {
             <LabeledInput
               :value="row.current"
               :mode="mode"
-              :label="row.label || row.name"
+              :label="row.name"
               :required="row.default === undefined && !row.stale"
               :placeholder="row.default === undefined ? t('appsPlus.instance.valueNoDefault') : String(row.default)"
               @update:value="v => setValue(row.name, v)"
             />
-            <!-- The key under the label, so a label never hides which `${...}` a row answers. -->
-            <p
-              v-if="row.label && row.label !== row.name"
-              class="values__note"
-            >
-              <code>{{ row.name }}</code>
-            </p>
             <p
               v-if="row.stale || row.default === undefined"
               class="values__note values__note--warning"

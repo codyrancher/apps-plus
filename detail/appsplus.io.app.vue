@@ -41,11 +41,9 @@ export default {
      */
     valueRows() {
       const values = this.value.spec?.values || {};
-      const labels = this.value.spec?.valueLabels || {};
 
       return Object.keys(values).sort().map((name) => ({
         name,
-        label:   labels[name] || '',
         default: values[name],
       }));
     },
@@ -129,12 +127,6 @@ export default {
               :key="row.name"
             >
               <td>
-                <div
-                  v-if="row.label"
-                  class="values-table__label"
-                >
-                  {{ row.label }}
-                </div>
                 <code>{{ row.name }}</code>
               </td>
               <td>
@@ -234,10 +226,6 @@ export default {
     padding: 8px 24px 8px 0;
     border-bottom: 1px solid var(--border);
     vertical-align: top;
-  }
-
-  &__label {
-    font-weight: 600;
   }
 }
 </style>

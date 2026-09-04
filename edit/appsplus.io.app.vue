@@ -173,7 +173,6 @@ export default {
       this.selected = this.templates.length - 1;
 
       this.values = { ...imported.values, ...this.values };
-      this.value.spec.valueLabels = { ...imported.labels, ...(this.value.spec.valueLabels || {}) };
     },
 
     removeTemplate(index) {
@@ -404,9 +403,7 @@ export default {
           v-model:value="values"
           :mode="mode"
           :keys="valueKeys"
-          :labels="value.spec.valueLabels || {}"
           :placeholder="t('appsPlus.app.valueKeyPlaceholder')"
-          @update:labels="v => value.spec.valueLabels = v"
         />
       </Tab>
     </Tabbed>

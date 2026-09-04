@@ -81,8 +81,6 @@ appsPlus:
     undeclaredDeclareEdit: Declare parameters by editing {app}.
     key: Value
     default: Default
-    label: Label
-    labelPlaceholder: Shown on the install form instead of the key
     override: This installation
     none: This app declares no values. It installs exactly as it is defined.
   deployed:

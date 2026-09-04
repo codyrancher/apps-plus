@@ -40,21 +40,9 @@ export default {
       type:    String,
       default: '',
     },
-
-    /**
-     * The words each value wears on the install form, keyed like `value`.
-     *
-     * Editable here because the picker's toggle must not be the only way to a friendly label:
-     * a parameter declared in this table - or authored by hand - reads as its raw key on every
-     * install form forever unless the label can be typed where the key was.
-     */
-    labels: {
-      type:    Object,
-      default: () => ({}),
-    },
   },
 
-  emits: ['update:value', 'update:labels'],
+  emits: ['update:value'],
 
   computed: {
     /**
@@ -139,24 +127,6 @@ export default {
       return typedOverrides(this.value || {}, edited, true);
     },
 
-    /**
-     * Record one key's label, or clear it.
-     *
-     * Blank deletes rather than storing '', because every reader falls back to the key when
-     * there is no label - an empty string kept would be a row labelled with nothing.
-     */
-    setLabel(key, entered) {
-      const labels = { ...this.labels };
-      const text = (entered || '').trim();
-
-      if (text) {
-        labels[key] = text;
-      } else {
-        delete labels[key];
-      }
-
-      this.$emit('update:labels', labels);
-    },
   },
 };
 </script>
@@ -184,24 +154,8 @@ export default {
     :key-option-unique="true"
     :key-errors="stale"
     :key-placeholder="placeholder"
-    :extra-columns="['label']"
     @update:value="v => $emit('update:value', merged(v))"
   >
-    <template #label:label>
-      {{ t('appsPlus.values.label') }}
-    </template>
-    <!--
-      Keyed to the row's current key rather than held in row state, so re-picking a row's key
-      simply shows whatever label that key already has.
-    -->
-    <template #col:label="{ row }">
-      <input
-        :value="labels[row.key] || ''"
-        :disabled="mode === 'view'"
-        :placeholder="t('appsPlus.values.labelPlaceholder')"
-        @change="e => setLabel(row.key, e.target.value)"
-      >
-    </template>
     <!--
       KeyValue's own Add disables itself once every option in key-options is a row - which under
       the declared model is always, since the options ARE the rows' keys. Adding a row here is
