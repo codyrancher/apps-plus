@@ -12,6 +12,7 @@ import {
   APP, APP_INSTANCE, FLEET_CLUSTER, APP_QUERY, DEFAULT_TARGET_NAMESPACE
 } from '../config/types';
 import { NAMESPACE } from '@shell/config/types';
+import { DEFAULT_CLUSTER_VALUES } from '../config/cluster-template';
 import {
   renderTemplates, missingValues, appVariables, undeclaredWarnings, isSet, BUILT_IN_VALUES
 } from '../render';
@@ -252,8 +253,23 @@ export default {
     },
 
     /** What the app answers a value with when this installation says nothing. */
+    /**
+     * What each value falls back to when this installation leaves it blank.
+     *
+     * An installation that provisions a cluster gets the cluster template's own defaults as
+     * well as the app's. They were always applied - syncCluster substitutes them at render
+     * time, and requiredValues has never counted them as owed - but this form did not know
+     * about them, so every one of region, zone, instanceType and the rest was drawn as
+     * `Required` with "the app has no default for this" underneath. Eight fields demanding an
+     * answer they already had.
+     *
+     * The app's own values win: an app that declares `region` has said something deliberate,
+     * and the built-in default is only there for the ones it says nothing about.
+     */
     appDefaults() {
-      return this.selectedApp?.spec?.values || {};
+      const declared = this.selectedApp?.spec?.values || {};
+
+      return this.provisions ? { ...DEFAULT_CLUSTER_VALUES, ...declared } : declared;
     },
 
     /** The words the app's definer chose for each value, when they chose any. */
@@ -363,9 +379,14 @@ export default {
       :mode="mode"
       :namespaced="false"
       :description-hidden="true"
-      :extra-columns="['app']"
+      :extra-columns="value.spec.app ? [] : ['app']"
       :register-before-hook="registerBeforeHook"
     >
+      <!--
+        The app is chosen before this page exists - Install on an app's row brings the name in
+        the query - so the picker is only drawn for the one route that arrives without one,
+        rather than asking again for something already answered.
+      -->
       <template #app>
         <LabeledSelect
           v-model:value="value.spec.app"
