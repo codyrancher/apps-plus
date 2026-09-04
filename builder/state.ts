@@ -312,10 +312,98 @@ export function relinkStaged(): void {
       return;
     }
 
-    if (rewrite(manifest, staged, null)) {
+    // Both, and not in one condition: `||` would skip the second the moment the first is true.
+    const linked = rewrite(manifest, staged, null);
+    const labelled = relabel(manifest, new Set(staged.keys()));
+
+    if (linked || labelled) {
       template.content = dumpTemplate(manifest);
     }
   });
+}
+
+/**
+ * The label maps a manifest has, at the places a manifest is allowed to have them.
+ *
+ * By path rather than by walking everything: a label map is a map of strings to strings, which
+ * is also what half a manifest looks like, and a blind search would rewrite an annotation, an
+ * environment variable, or a line in somebody's ConfigMap data.
+ */
+function labelMaps(manifest: any): Record<string, unknown>[] {
+  const found: Record<string, unknown>[] = [];
+  const add = (map: unknown) => {
+    if (map && typeof map === 'object' && !Array.isArray(map)) {
+      found.push(map as Record<string, unknown>);
+    }
+  };
+
+  add(manifest?.metadata?.labels);
+  // A Service's selector is a flat label map; a Deployment's is `{ matchLabels }`. Adding both
+  // is harmless: only string values are ever touched, and matchLabels is an object.
+  add(manifest?.spec?.selector);
+  add(manifest?.spec?.selector?.matchLabels);
+  add(manifest?.spec?.template?.metadata?.labels);
+  add(manifest?.spec?.jobTemplate?.spec?.template?.metadata?.labels);
+
+  return found;
+}
+
+/**
+ * Parameterise the labels a resource uses to name itself and find its own pods.
+ *
+ * `app: hello-web` on a Deployment, the same on its pod template, and the same again in a
+ * Service's selector are all the resource's own name written as a label - so two installations
+ * in one namespace both label their pods `app: hello-web`, and each Service selects both sets.
+ * The pods are the other installation's half the time, which is not an error anybody sees.
+ *
+ * Done here rather than in parameterise, where the name itself is rewritten, because it can
+ * only be done safely once the whole staged set is known. A Service is routinely called
+ * `hello-web-svc` and selects `app: hello-web` - the workload's name, not its own - so a
+ * resource rewriting its labels alone would leave that selector pointing at a label nothing
+ * carries any more. Matching against every staged origin keeps the set internally consistent:
+ * either both ends move or neither does.
+ *
+ * Idempotent for the same reason relinking is - `${install}-hello-web` is not `hello-web`.
+ */
+function relabel(manifest: any, names: Set<string>): boolean {
+  if (!names.size) {
+    return false;
+  }
+
+  let changed = false;
+
+  labelMaps(manifest).forEach((map) => {
+    Object.entries(map).forEach(([key, value]) => {
+      if (typeof value === 'string' && names.has(value)) {
+        map[key] = `\${install}-${ value }`;
+        changed = true;
+      }
+    });
+  });
+
+  // `matchExpressions` selects on the same labels by another syntax, and leaving it behind
+  // would be the mismatch this exists to prevent.
+  const expressions = manifest?.spec?.selector?.matchExpressions;
+
+  if (Array.isArray(expressions)) {
+    expressions.forEach((expression: any) => {
+      if (!Array.isArray(expression?.values)) {
+        return;
+      }
+
+      expression.values = expression.values.map((value: unknown) => {
+        if (typeof value === 'string' && names.has(value)) {
+          changed = true;
+
+          return `\${install}-${ value }`;
+        }
+
+        return value;
+      });
+    });
+  }
+
+  return changed;
 }
 
 /**
