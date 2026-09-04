@@ -230,11 +230,19 @@ export default {
     @finish="save"
     @cancel="done"
   >
+    <!--
+      `description-key` because an App keeps its description in `spec.description`, which is
+      where the CRD declares it and where the list reads it from. Left to itself
+      NameNsDescription reads and writes the field.cattle.io/description annotation instead, so
+      the box came up empty on an app that plainly had a description, and typing one put it
+      somewhere nothing looks.
+    -->
     <NameNsDescription
       class="fill-row"
       :value="value"
       :mode="mode"
       :namespaced="false"
+      description-key="spec.description"
       :register-before-hook="registerBeforeHook"
     />
 
