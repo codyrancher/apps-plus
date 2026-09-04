@@ -44,7 +44,8 @@ export function init($plugin: IPlugin, store: any) {
 
   basicType([APP]);
 
-  // Under Fleet's own entries - Dashboard is 112 and Application 111 - and above Clusters at
-  // 108, so this reads as the third way to deploy rather than as something bolted on the end.
-  weightType(APP, 110, true);
+  // Last in Fleet's menu, under everything the product ships with. Negative rather than 0,
+  // because 0 is what an unweighted entry gets - Workspaces among them - and a tie is settled
+  // by name, which would put this above it by accident rather than on purpose.
+  weightType(APP, -1, true);
 }

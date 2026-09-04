@@ -233,7 +233,7 @@ export default {
       <Tab
         name="templates"
         :label="t('appsPlus.app.templates')"
-        :weight="2"
+        :weight="1"
       >
         <div class="template-editor">
           <div class="file-list">
@@ -366,7 +366,7 @@ export default {
       <Tab
         name="cluster"
         :label="t('appsPlus.app.clusterTemplate')"
-        :weight="1"
+        :weight="2"
       >
         <Banner
           color="info"

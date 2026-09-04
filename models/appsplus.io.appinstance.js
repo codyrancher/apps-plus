@@ -400,9 +400,19 @@ export default class AppInstance extends SteveModel {
 
   get stateDescription() {
     if (this.isTerminating) {
-      return this.provisionsCluster ?
-        `Waiting for the cluster ${ this.clusterName } and everything it deployed to be removed.` :
-        'Waiting for what it deployed to be removed.';
+      switch (this.terminatingStage) {
+      case 'resources':
+        return this.targetClusterNames.length ?
+          `Removing what it deployed to ${ this.targetDisplay }.` :
+          'Removing what it deployed.';
+      case 'cluster':
+        return `What it deployed is gone. Waiting for the cluster ${ this.clusterName } to be ` +
+          'deleted, which takes a few minutes - the installation goes when the cluster does.';
+      default:
+        return this.provisionsCluster ?
+          `The cluster ${ this.clusterName } and everything it deployed are gone; finishing up.` :
+          'What it deployed is gone; finishing up.';
+      }
     }
 
     const missing = this.missingValues;
@@ -481,9 +491,87 @@ export default class AppInstance extends SteveModel {
     }
   }
 
+  /**
+   * Put the finalizer on at the last possible moment, and only then delete.
+   *
+   * ensureFinalizer above runs during save, which covers every installation this extension
+   * created - but not one made with kubectl, nor one that predates the finalizer existing. Such
+   * an installation is deleted the instant the request is accepted: the row goes, and the
+   * cluster it brought carries on being torn down for another ten minutes with nothing on
+   * screen to say so. That is the case this closes, because it is the case somebody hits.
+   *
+   * Patched rather than saved: this object is on its way out, and a full save would reconcile
+   * it - writing Bundles for an installation being deleted.
+   */
+  async remove(opt) {
+    const existing = this.metadata?.finalizers || [];
+
+    if (!existing.includes(FINALIZER)) {
+      try {
+        // `add` on an object member replaces it, so this works whether or not the list is
+        // already there - which `add` to `/metadata/finalizers/-` would not.
+        await this.patch([{ op: 'add', path: '/metadata/finalizers', value: [...existing, FINALIZER] }]);
+      } catch (e) {
+        // Worth saying, and not worth stopping for: without the finalizer the delete still
+        // happens, it just goes back to disappearing early.
+        console.warn(`apps-plus: could not hold ${ this.metadata?.name } for cleanup`, e); // eslint-disable-line no-console
+      }
+    }
+
+    return super.remove(opt);
+  }
+
   /** Whether this is on its way out and waiting for its own things to go. */
   get isTerminating() {
     return !!this.metadata?.deletionTimestamp;
+  }
+
+  /**
+   * Which half of the teardown is still outstanding.
+   *
+   * Read from the store rather than by a forced lookup, because this is what the row says
+   * rather than what decides it: a stage that lags a few seconds is a label that lags a few
+   * seconds, whereas releaseWhenEmpty - which decides whether the object may actually go -
+   * still asks Rancher directly.
+   *
+   * The order is the order the teardown happens in: Kubernetes garbage-collects the Bundles
+   * and the cluster together, but the Bundles go in seconds and a cluster takes minutes, so in
+   * practice one follows the other and saying so is more use than one message for both.
+   */
+  get terminatingStage() {
+    if (!this.isTerminating) {
+      return null;
+    }
+
+    if (this.bundles.length) {
+      return 'resources';
+    }
+
+    if (this.provisionsCluster && this.provisionedCluster) {
+      return 'cluster';
+    }
+
+    return 'finishing';
+  }
+
+  /**
+   * What the badge says while this is going away.
+   *
+   * `state` stays `removing` throughout so the colour and the spinner are the ones Rancher uses
+   * for anything being deleted; only the words change, because the difference between waiting
+   * on a Bundle and waiting on a cluster is the difference between seconds and minutes.
+   */
+  get stateDisplay() {
+    switch (this.terminatingStage) {
+    case 'resources':
+      return 'Removing resources';
+    case 'cluster':
+      return 'Deleting cluster';
+    case 'finishing':
+      return 'Finishing';
+    default:
+      return super.stateDisplay;
+    }
   }
 
   /**
@@ -501,6 +589,24 @@ export default class AppInstance extends SteveModel {
    */
   async releaseWhenEmpty() {
     if (!this.isTerminating || !(this.metadata?.finalizers || []).includes(FINALIZER)) {
+      return false;
+    }
+
+    // Do the deleting, not just the waiting.
+    //
+    // The finalizer that holds this object also stops Kubernetes collecting what it owns:
+    // garbage collection runs when an owner is *gone*, and a finalizer is precisely the object
+    // not being gone. Waiting for ownerReferences to do it is waiting for something that cannot
+    // start - the cluster sat there with no deletionTimestamp for as long as it was left.
+    //
+    // So the teardown is driven from here, in the order the messages promise: the resources it
+    // deployed first, because they are seconds and a cluster is minutes, and because a cluster
+    // torn down under its own workloads is the wrong way round.
+    if (await this.deleteBundles()) {
+      return false;
+    }
+
+    if (await this.deleteCluster()) {
       return false;
     }
 
@@ -537,6 +643,68 @@ export default class AppInstance extends SteveModel {
    * up rather than listing. A stale "still there" only delays the row; a stale "all gone" would
    * drop it while the cluster was still up, which is the thing being fixed.
    */
+  /**
+   * Remove every Bundle this installation still has, and say whether there were any.
+   *
+   * Returns true while there is anything left to wait for, so the caller can stop there and
+   * come back on the next refresh rather than tearing the cluster down underneath resources
+   * that are still on it.
+   */
+  async deleteBundles() {
+    let remaining = false;
+
+    for (const namespace of await this.candidateWorkspaces()) {
+      const bundle = await this.findBundle(namespace);
+
+      if (!bundle) {
+        continue;
+      }
+
+      remaining = true;
+
+      if (!bundle.metadata?.deletionTimestamp) {
+        try {
+          await bundle.remove();
+        } catch (e) {
+          // Fleet reports a Bundle it cannot remove, and the next pass tries again. Failing
+          // the whole teardown over one would strand the finalizer instead.
+          console.warn(`apps-plus: could not remove bundle ${ namespace }/${ this.bundleName }`, e); // eslint-disable-line no-console
+        }
+      }
+    }
+
+    return remaining;
+  }
+
+  /**
+   * Remove the cluster this installation brought, and say whether it is still there.
+   *
+   * Only ever the cluster this instance owns: findCluster looks it up by the name this instance
+   * provisions, in the one workspace it provisions into. An installation that deploys to
+   * clusters somebody else made never reaches here, because provisionsCluster is false.
+   */
+  async deleteCluster() {
+    if (!this.provisionsCluster) {
+      return false;
+    }
+
+    const cluster = await this.findCluster();
+
+    if (!cluster) {
+      return false;
+    }
+
+    if (!cluster.metadata?.deletionTimestamp) {
+      try {
+        await cluster.remove();
+      } catch (e) {
+        console.warn(`apps-plus: could not remove cluster ${ this.clusterName }`, e); // eslint-disable-line no-console
+      }
+    }
+
+    return true;
+  }
+
   async hasRemainingResources() {
     if (this.provisionsCluster && await this.findCluster()) {
       return true;
