@@ -4,7 +4,6 @@ import CruResource from '@shell/components/CruResource';
 import NameNsDescription from '@shell/components/form/NameNsDescription';
 import { LabeledInput } from '@components/Form/LabeledInput';
 import ValuesEditor from '../components/ValuesEditor';
-import FieldPicker from '../components/FieldPicker';
 import ImportResourceModal from '../components/ImportResourceModal';
 import YamlEditor from '@shell/components/YamlEditor';
 import Tabbed from '@shell/components/Tabbed';
@@ -35,7 +34,6 @@ export default {
     NameNsDescription,
     LabeledInput,
     ValuesEditor,
-    FieldPicker,
     ImportResourceModal,
     YamlEditor,
     Tabbed,
@@ -61,10 +59,10 @@ export default {
       spec.values = {};
     }
 
-    // clusterTemplateKey remounts the YAML editor; see useDefaultClusterTemplate.
-    // bodyView is which half of the template editor shows: the field picker or the raw YAML.
+    // clusterTemplateKey and templatesKey remount a YAML editor; see
+    // useDefaultClusterTemplate and onTabChanged for the two reasons that is needed.
     return {
-      selected: 0, clusterTemplateKey: 0, importing: false, bodyView: 'fields',
+      selected: 0, clusterTemplateKey: 0, templatesKey: 0, importing: false,
     };
   },
 
@@ -153,9 +151,6 @@ export default {
     addTemplate() {
       this.templates.push(NEW_TEMPLATE());
       this.selected = this.templates.length - 1;
-      // A brand-new template is empty, and the picker has no fields to offer until some YAML
-      // exists - so a create starts in the editor rather than at a warning.
-      this.bodyView = 'yaml';
     },
 
     /**
@@ -200,6 +195,21 @@ export default {
      * updated the model and left the box empty, and the button read as doing nothing at all.
      * Changing the key remounts the editor around the new content.
      */
+    /**
+     * Remount the template editor when its tab is shown.
+     *
+     * CodeMirror measures itself when it is created, and a tab that is not the first one is
+     * created hidden - so it comes up as a box of no height with nothing in it. This was
+     * invisible while the editor sat behind a second tab of its own, because clicking that tab
+     * mounted it fresh; the moment Cluster Template became the first tab, the Templates editor
+     * was the one being built in the dark.
+     */
+    onTabChanged({ selectedName }) {
+      if (selectedName === 'templates') {
+        this.templatesKey++;
+      }
+    },
+
     useDefaultClusterTemplate() {
       this.value.spec.clusterTemplate = DEFAULT_CLUSTER_TEMPLATE;
       this.clusterTemplateKey++;
@@ -229,7 +239,10 @@ export default {
       :register-before-hook="registerBeforeHook"
     />
 
-    <Tabbed :side-tabs="true">
+    <Tabbed
+      :side-tabs="true"
+      @changed="onTabChanged"
+    >
       <Tab
         name="templates"
         :label="t('appsPlus.app.templates')"
@@ -286,39 +299,14 @@ export default {
               />
 
               <!--
-                The same two views a card in the builder drawer has, for the same reason:
-                marking a field customizable on an app that already exists should not mean
-                finding the line in the YAML and typing `${...}` by hand.
+                The YAML, and only the YAML. A field picker sat in front of it once, on a tab -
+                but the place to say which fields an installation may set is the resource's own
+                edit page in the builder drawer, where the field is a labelled input with a
+                switch beside it rather than a path in a list. Two ways to do one thing, and
+                this was the worse one.
               -->
-              <div
-                v-if="!isView"
-                class="body-tabs"
-              >
-                <button
-                  v-for="tab in ['fields', 'yaml']"
-                  :key="tab"
-                  type="button"
-                  :class="{ 'body-tabs__tab--on': bodyView === tab }"
-                  class="body-tabs__tab"
-                  @click="bodyView = tab"
-                >
-                  {{ t(tab === 'fields' ? 'appsPlus.fields.tab' : 'appsPlus.fields.yamlTab') }}
-                </button>
-              </div>
-
-              <FieldPicker
-                v-if="!isView && bodyView === 'fields'"
-                :content="current.content"
-                :values="values"
-                :labels="value.spec.valueLabels || {}"
-                class="picker-body"
-                @update:content="updateContent"
-                @update:values="v => values = v"
-                @update:labels="v => value.spec.valueLabels = v"
-              />
               <YamlEditor
-                v-else
-                :key="selected"
+                :key="`${ selected }-${ templatesKey }`"
                 :value="current.content"
                 :mode="mode"
                 :hide-preview-buttons="true"
@@ -451,33 +439,7 @@ export default {
   width: auto;
 }
 
-.body-tabs {
-  display:       flex;
-  gap:           2px;
-  margin-bottom: 8px;
-  border-bottom: 1px solid var(--border);
 
-  &__tab {
-    background:    none;
-    border:        none;
-    border-bottom: 2px solid transparent;
-    color:         var(--muted);
-    cursor:        pointer;
-    font-size:     12px;
-    padding:       6px 10px;
-
-    &--on {
-      color:        var(--body-text);
-      border-color: var(--primary);
-    }
-  }
-}
-
-.picker-body {
-  border:     1px solid var(--border);
-  max-height: 480px;
-  overflow:   auto;
-}
 
 .collect-hint {
   margin-top: 16px;
