@@ -284,7 +284,7 @@ export default {
    * down with it.
    */
   errorCaptured(e) {
-    this.error = e?.message || String(e);
+    this.failed(e);
 
     return false;
   },
@@ -343,8 +343,36 @@ export default {
         this.model = await this.$store.dispatch(`${ inStore }/create`, { ...manifest, type, id: idFor(manifest) });
         this.unwait(this.model);
       } catch (e) {
-        this.error = e?.message || String(e);
+        this.failed(e);
       }
+    },
+
+    /**
+     * Say what went wrong in the terms somebody can do something about.
+     *
+     * One failure is common enough to be worth telling apart, and it is not a fault in anything
+     * staged: an edit page for a cluster resource asks the cluster store for the rest of what it
+     * shows - a Deployment form lists Services - and Rancher's management pages have no cluster
+     * open, so that store is empty and the page dies partway through on a type nobody staged.
+     * What arrives is `Unknown schema for type: service`, which reads as a broken template.
+     *
+     * The half-drawn form goes with it. A page that stopped in the middle of itself is not
+     * something to leave on screen underneath an explanation of why it is not there.
+     */
+    failed(e) {
+      const needsCluster = !this.$store.getters['cluster/schemaFor'](this.steveType);
+
+      if (needsCluster && !this.$store.getters['currentCluster']) {
+        this.component = null;
+        this.model = null;
+        this.marks = [];
+        this.signature = '';
+        this.notice = this.t('appsPlus.form.noCluster', { kind: this.manifest?.kind || this.steveType });
+
+        return;
+      }
+
+      this.error = e?.message || String(e);
     },
 
     /**
