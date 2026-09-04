@@ -14,6 +14,7 @@ import {
   dropAppTemplates, MIN_WIDTH
 } from '../builder/state';
 import { closeBuilder, resizeBuilder } from '../builder/overlay';
+import { referencedVariables, BUILT_IN_VALUES } from '../render';
 
 /** The dropdown row that means "make one", rather than the name of an app. */
 const NEW_APP = '__new__';
@@ -501,11 +502,29 @@ export default {
         return { name, content: template.content };
       });
 
+      // Only the values these templates actually refer to.
+      //
+      // A value exists in the drawer because a field was toggled on some resource; if the file
+      // that introduced it has since been removed, or its `${...}` edited away in the YAML tab,
+      // the value is left declaring a parameter the app does not have. Every install form then
+      // asks for it, which is how an app whose templates say nothing but `${text}` came to have
+      // an `adminPassword` on its form.
+      //
+      // Built-ins are never written: they are supplied at render time and declaring one would
+      // make the app ask for something it already has.
+      const used = new Set([...kept, ...added]
+        .flatMap((template) => referencedVariables(template.content || ''))
+        .filter((name) => !BUILT_IN_VALUES.includes(name)));
+
+      const values = Object.fromEntries(
+        Object.entries(this.builder.values).filter(([name]) => used.has(name))
+      );
+
       return {
         renamed,
         spec: {
           templates: [...kept, ...added],
-          values:    { ...this.builder.values },
+          values,
         },
       };
     },

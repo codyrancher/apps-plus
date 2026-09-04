@@ -16,6 +16,7 @@
 import { reactive, watch } from 'vue';
 import jsyaml from 'js-yaml';
 import { importResource, dumpTemplate } from '../import-resource';
+import { referencedVariables } from '../render';
 
 /** One staged file: what it will become in `spec.templates`, plus what it came from. */
 export interface StagedTemplate {
@@ -471,7 +472,28 @@ export function loadAppTemplates(templates: { name: string; content: string }[],
     ...loaded,
     ...builder.templates.filter((template) => !template.saved && !names.has(template.name)),
   ];
-  builder.values = { ...values, ...builder.values };
+  // The app's values replace what the drawer was holding; they do not merge into it.
+  //
+  // Merging is how `adminPassword` from one app turned up declared on the next: the drawer
+  // keeps its values in localStorage and survives being closed, so opening a second app left
+  // the first one's values sitting there, and the next save wrote them into the second app.
+  //
+  // What is kept is only what the still-unsaved staged files actually refer to - a value that a
+  // collected resource introduced by having a field toggled, which has not been written
+  // anywhere yet and would otherwise be lost by switching app.
+  const staged = builder.templates
+    .filter((template) => !template.saved)
+    .flatMap((template) => referencedVariables(template.content || ''));
+
+  const carried: Record<string, unknown> = {};
+
+  staged.forEach((name) => {
+    if (name in builder.values) {
+      carried[name] = builder.values[name];
+    }
+  });
+
+  builder.values = { ...values, ...carried };
 }
 
 /** Forget the app's own files, without touching what has been collected. */
