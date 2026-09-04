@@ -3,7 +3,18 @@
 // Two of them are Steve type ids rather than Kubernetes ones: Steve names a type
 // `<group>.<kind lowercased>`, so the CRD `apps.appsplus.io` is `appsplus.io.app` here.
 
-export const PRODUCT_NAME = 'apps-plus';
+/**
+ * The product these pages live under, which is Rancher's own Fleet - Continuous Delivery in the
+ * side menu - rather than a product of this extension's own.
+ *
+ * It belongs there: an App is a definition and an Installation is one deployment of it by
+ * Fleet, so the list sits beside the Git Repos and Helm Ops that are the other two ways to have
+ * Fleet deploy something. Fleet's product declares `extendable: true` for exactly this.
+ *
+ * Everything else follows from this constant: the models build their route locations from it,
+ * so the pages move with it and nothing else needed changing.
+ */
+export const PRODUCT_NAME = 'fleet';
 
 // A product with no cluster of its own still needs a `:cluster` param. `_` is the shell's
 // placeholder for "none", exported as BLANK_CLUSTER from @shell/store/store-types.

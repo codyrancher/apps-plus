@@ -1,12 +1,14 @@
 import { IPlugin } from '@shell/core/types';
-import {
-  PRODUCT_NAME, BLANK_CLUSTER, APP, APP_INSTANCE, LIST_ROUTE
-} from './config/types';
+import { PRODUCT_NAME, APP, APP_INSTANCE } from './config/types';
 
 /**
- * One global product in the side menu, with one page under it.
+ * Two types and one nav entry, added to Rancher's Fleet product.
  *
- * The page is the App type's list, replaced by list/appsplus.io.app.vue - Apps as the group
+ * This extension registers no product of its own. Apps and Installations are a way of having
+ * Fleet deploy something, so they belong in the side menu beside the other two - and Fleet's
+ * product is marked `extendable`, which is Rancher saying so.
+ *
+ * The entry is the App type's list, replaced by list/appsplus.io.app.vue - Apps as the group
  * headers and their instances as the rows, the shape Cluster Explorer uses for Projects and
  * Namespaces. Instances are a configured type but not a nav entry: they are only ever reached
  * through that list, and a second entry showing the same rows ungrouped would be two
@@ -16,26 +18,7 @@ import {
 // $plugin.DSL takes it as `any`. There is no narrower type to reach for.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function init($plugin: IPlugin, store: any) {
-  const { product, basicType, configureType } = $plugin.DSL(store, PRODUCT_NAME);
-
-  // `inStore: 'management'` because this product owns no cluster: its CRDs live in the local
-  // cluster alongside Rancher's own, which is what the management store is. `to` is where the
-  // side-menu button lands, and it has to carry the blank cluster param the route declares.
-  const productOpts: Record<string, unknown> = {
-    icon:                'flask',
-    inStore:             'management',
-    removable:           false,
-    showClusterSwitcher: false,
-    weight:              98,
-    to:                  {
-      name:   LIST_ROUTE,
-      params: {
-        product: PRODUCT_NAME, cluster: BLANK_CLUSTER, resource: APP
-      }
-    }
-  };
-
-  product(productOpts);
+  const { basicType, configureType, weightType } = $plugin.DSL(store, PRODUCT_NAME);
 
   // showState is off for Apps because an App is a definition and has no state to show; the
   // state column in this list belongs to the instances, which do.
@@ -60,4 +43,8 @@ export function init($plugin: IPlugin, store: any) {
   });
 
   basicType([APP]);
+
+  // Under Fleet's own entries - Dashboard is 112 and Application 111 - and above Clusters at
+  // 108, so this reads as the third way to deploy rather than as something bolted on the end.
+  weightType(APP, 110, true);
 }
