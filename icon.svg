@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Apps Plus: a grid of app tiles - instances of a chart - with a plus to add another. -->
+  <rect x="9"  y="9"  width="20" height="20" rx="4" fill="#43a047"/>
+  <rect x="35" y="9"  width="20" height="20" rx="4" fill="#66bb6a"/>
+  <rect x="9"  y="35" width="20" height="20" rx="4" fill="#66bb6a"/>
+  <rect x="35" y="35" width="20" height="20" rx="4" fill="#2e7d32"/>
+  <circle cx="47" cy="47" r="12" fill="#1b5e20" stroke="#ffffff" stroke-width="2.5"/>
+  <path d="M47 41v12M41 47h12" fill="none" stroke="#ffffff" stroke-width="3.2" stroke-linecap="round"/>
+</svg>
