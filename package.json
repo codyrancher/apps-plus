@@ -1,12 +1,12 @@
 {
   "name": "apps-plus",
   "description": "Apps and instances: a chart you can edit in the dashboard, deployed by Fleet",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": false,
   "rancher": {
     "annotations": {
       "catalog.cattle.io/rancher-version": ">= 2.10.0",
-      "catalog.cattle.io/ui-extensions-version": ">= 3.0.0 < 4.0.0",
+      "catalog.cattle.io/ui-extensions-version": ">= 3.0.0 < 5.0.0",
       "catalog.cattle.io/display-name": "Apps Plus"
     }
   },
