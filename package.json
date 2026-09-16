@@ -6,15 +6,23 @@
   "rancher": {
     "annotations": {
       "catalog.cattle.io/rancher-version": ">= 2.10.0",
-      "catalog.cattle.io/ui-extensions-version": ">= 3.0.0 < 4.0.0"
+      "catalog.cattle.io/ui-extensions-version": ">= 3.0.0 < 4.0.0",
+      "catalog.cattle.io/display-name": "Apps Plus"
     }
   },
   "scripts": {},
-  "engines": { "node": ">=24" },
+  "engines": {
+    "node": ">=24"
+  },
   "devDependencies": {
     "@vue/cli-plugin-babel": "5.0.9",
     "@vue/cli-service": "5.0.8",
     "@vue/cli-plugin-typescript": "5.0.9"
   },
-  "browserslist": ["> 1%", "last 2 versions", "not dead"]
+  "browserslist": [
+    "> 1%",
+    "last 2 versions",
+    "not dead"
+  ],
+  "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8IS0tIEFwcHMgUGx1czogYSBncmlkIG9mIGFwcCB0aWxlcyAtIGluc3RhbmNlcyBvZiBhIGNoYXJ0IC0gd2l0aCBhIHBsdXMgdG8gYWRkIGFub3RoZXIuIC0tPgogIDxyZWN0IHg9IjkiICB5PSI5IiAgd2lkdGg9IjIwIiBoZWlnaHQ9IjIwIiByeD0iNCIgZmlsbD0iIzQzYTA0NyIvPgogIDxyZWN0IHg9IjM1IiB5PSI5IiAgd2lkdGg9IjIwIiBoZWlnaHQ9IjIwIiByeD0iNCIgZmlsbD0iIzY2YmI2YSIvPgogIDxyZWN0IHg9IjkiICB5PSIzNSIgd2lkdGg9IjIwIiBoZWlnaHQ9IjIwIiByeD0iNCIgZmlsbD0iIzY2YmI2YSIvPgogIDxyZWN0IHg9IjM1IiB5PSIzNSIgd2lkdGg9IjIwIiBoZWlnaHQ9IjIwIiByeD0iNCIgZmlsbD0iIzJlN2QzMiIvPgogIDxjaXJjbGUgY3g9IjQ3IiBjeT0iNDciIHI9IjEyIiBmaWxsPSIjMWI1ZTIwIiBzdHJva2U9IiNmZmZmZmYiIHN0cm9rZS13aWR0aD0iMi41Ii8+CiAgPHBhdGggZD0iTTQ3IDQxdjEyTTQxIDQ3aDEyIiBmaWxsPSJub25lIiBzdHJva2U9IiNmZmZmZmYiIHN0cm9rZS13aWR0aD0iMy4yIiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KPC9zdmc+Cg=="
 }

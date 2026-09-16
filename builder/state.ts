@@ -581,7 +581,14 @@ export function loadAppTemplates(templates: { name: string; content: string }[],
     }
   });
 
-  builder.values = { ...values, ...carried };
+  // The app's own values are spread last, so a carried value only ever *supplies* a name the
+  // app has not declared - it never overrides one it has.
+  //
+  // The other order is how `rancher-ha` ended up declaring `image: alpine/socat:1.8.0.0`. A
+  // staged file left in the drawer referred to `${image}`, so `image` was carried; the app
+  // declares `image` too, and carrying won. Saving then wrote the wrong image back to the app,
+  // and every installation from it deployed socat with Rancher's arguments and crash-looped.
+  builder.values = { ...carried, ...values };
 }
 
 /** Forget the app's own files, without touching what has been collected. */

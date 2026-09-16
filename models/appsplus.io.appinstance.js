@@ -968,6 +968,19 @@ export default class AppInstance extends SteveModel {
         // Fleet applies this to any rendered resource that does not name a namespace itself,
         // which is what makes one app deployable to different namespaces per instance.
         defaultNamespace: this.targetNamespace,
+        helm:             {
+          // Adopt objects that are already there rather than refusing them.
+          //
+          // Fleet installs a bundle as a Helm release, and Helm will not take an object it did
+          // not create: it wants `app.kubernetes.io/managed-by: Helm` and its two release
+          // annotations on the live object, and errors with "invalid ownership metadata" when
+          // they are missing. That is the right default for a chart. It is the wrong one here,
+          // because an app is routinely deployed into a cluster that already has the objects
+          // it configures - `rancher-ha` writes the `github` AuthConfig, which Rancher itself
+          // creates, empty and disabled, on its first start. Nothing in the app can fix that
+          // from its side: the check is against the object in the cluster, not the manifest.
+          takeOwnership: true,
+        },
       });
     }
 
