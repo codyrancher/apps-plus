@@ -4,6 +4,7 @@ import { stageResource } from './builder/state';
 import { openBuilder, toggleBuilder, restoreBuilder } from './builder/overlay';
 import { initPageMarks } from './builder/page-marks';
 import { ADD_TO_APP_ACTION } from './config/types';
+import { ensureService } from './service';
 
 // The entry point. The dashboard calls this once, with a plugin object to register things on.
 export default function(plugin: IPlugin): void {
@@ -15,6 +16,24 @@ export default function(plugin: IPlugin): void {
   plugin.metadata = require('./package.json');
 
   plugin.addProduct(require('./product'));
+
+  /**
+   * The half of this extension that is not a browser.
+   *
+   * Deleting an Installation puts the `appsplus.io/cleanup` finalizer on it, and something then
+   * has to tear down what it deployed and take that finalizer off - otherwise the object sits
+   * Terminating for ever and its row never leaves any list that reads Installations. That work
+   * used to live only in a loop inside the browser's own delete, so a closed tab or a teardown
+   * slower than two minutes left a permanent tombstone. It belongs to this extension because the
+   * finalizer does: whoever puts one on owns taking it off.
+   *
+   * Create-if-missing and quiet, for the same reason every other ensure of this shape is: this
+   * runs on every load for every user, most of whom cannot write to that namespace and none of
+   * whom asked for it. Bootstrapping still needs a browser once - something has to create the
+   * Deployment, and this bundle is the only thing that knows what it should contain - but after
+   * that nobody has to be watching, which was the whole point.
+   */
+  ensureService().catch(() => {});
 
   // The builder's handle in the dashboard's own header, which is the only control that is not
   // attached to a page - the drawer it opens outlives every page, so its handle has to as well.
