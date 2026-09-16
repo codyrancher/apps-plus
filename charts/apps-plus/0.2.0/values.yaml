@@ -13,3 +13,7 @@ plugin:
     catalog.cattle.io/rancher-version: ">= 2.10.0"
     catalog.cattle.io/ui-extensions-version: ">= 3.0.0 < 5.0.0"
     catalog.cattle.io/display-name: Apps Plus
+
+backend:
+  enabled: true
+  image: node:24
