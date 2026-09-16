@@ -1,0 +1,75 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: apps.appsplus.io
+spec:
+  conversion:
+    strategy: None
+  group: appsplus.io
+  names:
+    categories:
+      - appsplus
+    kind: App
+    listKind: AppList
+    plural: apps
+    shortNames:
+      - apapp
+    singular: app
+  scope: Cluster
+  versions:
+    - additionalPrinterColumns:
+        - jsonPath: .status.templateCount
+          name: Templates
+          type: integer
+        - jsonPath: .metadata.creationTimestamp
+          name: Age
+          type: date
+      name: v1alpha1
+      schema:
+        openAPIV3Schema:
+          properties:
+            spec:
+              properties:
+                clusterTemplate:
+                  description: A provisioning.cattle.io Cluster manifest, for instances of this app that provision their own. Rendered with the same values as the templates above. Only its spec is used; name, workspace and ownership belong to the instance.
+                  type: string
+                defaultTargets:
+                  items:
+                    properties:
+                      clusterName:
+                        type: string
+                    type: object
+                  type: array
+                description:
+                  type: string
+                templates:
+                  description: The chart. Each entry is one YAML file applied to every target.
+                  items:
+                    properties:
+                      content:
+                        type: string
+                      name:
+                        type: string
+                    required:
+                      - name
+                      - content
+                    type: object
+                  type: array
+                valueLabels:
+                  description: Human-readable names for the keys in values, shown on the install form. A key with no label is shown as itself.
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                values:
+                  description: Default values, substituted into templates as ${key}. The keys are the app's declared parameters - only these (and the built-ins) are ever substituted, so a template's own ${...} syntax survives rendering.
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+              type: object
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+          type: object
+      served: true
+      storage: true
+      subresources:
+        status: {}
