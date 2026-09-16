@@ -88,6 +88,56 @@ jobs:
       # Empty on a manual run, which builds whatever version package.json currently names.
       tagged_release: ${{ github.event_name == 'release' && github.ref_name || '' }}
 
+  # The generator publishes a UI-only chart: a UIPlugin and nothing else. Apps Plus is not only
+  # a UI - it needs its two CRDs and its backend service on the cluster, or a single install
+  # shows no nav (Rancher hides a nav entry whose resource type has no schema). The generator
+  # has no hook for extra resources, so this overlays them onto the chart the reusable workflow
+  # just published, in place, and repackages and re-indexes it. See
+  # pkg/apps-plus/chart-extras/README.md.
+  patch-chart:
+    needs: build-extension-charts
+    if: always() && needs.build-extension-charts.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install helm and js-yaml
+        run: |
+          curl -sSL https://get.helm.sh/helm-v3.15.4-linux-amd64.tar.gz | tar xz -C /tmp linux-amd64/helm
+          sudo mv /tmp/linux-amd64/helm /usr/local/bin/helm
+          helm version --short
+          npm install --no-save js-yaml
+      - name: Check out gh-pages
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: ghpages
+      - name: Overlay CRDs and backend onto the published chart
+        run: |
+          version=$(node -p "require('./pkg/apps-plus/package.json').version")
+          if [ ! -f "ghpages/assets/apps-plus/apps-plus-${version}.tgz" ]; then
+            echo "no published chart for ${version} yet - nothing to patch"
+            exit 0
+          fi
+          bash pkg/apps-plus/chart-extras/apply.sh "$PWD/ghpages"
+      - name: Commit the patched chart to gh-pages
+        run: |
+          cd ghpages
+          if git diff --quiet; then
+            echo "chart already carries the backend - nothing to commit"
+            exit 0
+          fi
+          version=$(node -p "require('../pkg/apps-plus/package.json').version")
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Add CRDs and backend to the apps-plus ${version} chart"
+          git push
+
   # Did anything actually get built?
   #
   # The publish script does not fail when the build under it does. It ran, webpack reported five

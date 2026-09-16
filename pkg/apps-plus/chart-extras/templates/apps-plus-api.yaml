@@ -1,0 +1,127 @@
+{{- /*
+  The Apps Plus backend: the half of this extension that is not a browser. A single-file Node
+  service (this chart's files/apps-plus-api.mjs), run from a ConfigMap by `node /seed/server.mjs`,
+  exactly as it runs in Extension Studio. It finishes deleting Installations whose teardown
+  nobody stayed to watch. It talks to the apiserver as its own ServiceAccount, and its RBAC is
+  the narrow set that one job needs - not the cluster-admin it is granted in the Studio.
+
+  Toggle with `--set backend.enabled=false` if a cluster only wants the UI (for example a
+  management cluster whose Studio already runs this service).
+*/ -}}
+{{- $backend := .Values.backend | default dict -}}
+{{- if ne (toString ($backend.enabled | default true)) "false" -}}
+{{- $name := printf "%s-api" (include "extension-server.fullname" .) -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{ include "extension-server.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}
+  labels: {{ include "extension-server.labels" . | nindent 4 }}
+rules:
+  # Read every Installation and take the cleanup finalizer off the ones mid-delete.
+  - apiGroups: ["appsplus.io"]
+    resources: ["appinstances"]
+    verbs: ["get", "list", "watch", "patch"]
+  # Read Apps (definitions) for completeness; the service does not write them.
+  - apiGroups: ["appsplus.io"]
+    resources: ["apps"]
+    verbs: ["get", "list", "watch"]
+  # Tear down the Fleet Bundles an Installation deployed.
+  - apiGroups: ["fleet.cattle.io"]
+    resources: ["bundles"]
+    verbs: ["get", "list", "watch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $name }}
+  labels: {{ include "extension-server.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{ include "extension-server.labels" . | nindent 4 }}
+data:
+  server.mjs: |
+{{ .Files.Get "files/apps-plus-api.mjs" | indent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{ include "extension-server.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ $name }}
+  template:
+    metadata:
+      labels:
+        app: {{ $name }}
+        {{- include "extension-server.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ $name }}
+      containers:
+        - name: api
+          image: {{ $backend.image | default "node:24" | quote }}
+          command: ["node", "/seed/server.mjs"]
+          env:
+            - name: PORT
+              value: "8090"
+            - name: API_SOURCE_VERSION
+              value: {{ .Chart.AppVersion | quote }}
+          ports:
+            - name: http
+              containerPort: 8090
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8090
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          volumeMounts:
+            - name: seed
+              mountPath: /seed
+      volumes:
+        - name: seed
+          configMap:
+            name: {{ $name }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{ include "extension-server.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: {{ $name }}
+  ports:
+    - name: http
+      port: 8090
+      targetPort: 8090
+{{- end }}
