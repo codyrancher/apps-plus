@@ -1,7 +1,7 @@
 {
   "name": "apps-plus",
   "description": "Apps and instances: a chart you can edit in the dashboard, deployed by Fleet",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": false,
   "rancher": {
     "annotations": {
