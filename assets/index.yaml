@@ -12,16 +12,38 @@ entries:
       catalog.cattle.io/ui-component: plugins
       catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
     apiVersion: v2
-    appVersion: 0.2.0
-    created: "2026-09-16T23:05:15.866675139Z"
+    appVersion: 0.3.0
+    created: "2026-09-17T02:52:02.245596995Z"
     description: 'Apps and instances: a chart you can edit in the dashboard, deployed
       by Fleet'
-    digest: b737b7a92846d049f6b73525dc39dbf2bddf56dd1fafb214f1eb47cff1eb5a11
+    digest: ea0e66dc11fea4c3b48ebd71b69dcb0dfba9d5ed2284264a41dd05ac83d184c5
     icon: https://codyrancher.github.io/apps-plus/icon.svg
     name: apps-plus
     type: application
     urls:
-    - assets/apps-plus/apps-plus-0.2.0.tgz
+    - assets/apps-plus/apps-plus-0.3.0.tgz
+    version: 0.3.0
+  - annotations:
+      catalog.cattle.io/certified: rancher
+      catalog.cattle.io/display-name: Apps Plus
+      catalog.cattle.io/namespace: cattle-ui-plugin-system
+      catalog.cattle.io/os: linux
+      catalog.cattle.io/permits-os: linux, windows
+      catalog.cattle.io/rancher-version: '>= 2.10.0'
+      catalog.cattle.io/scope: management
+      catalog.cattle.io/ui-component: plugins
+      catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 5.0.0'
+    apiVersion: v2
+    appVersion: 0.2.0
+    created: "2026-09-16T23:05:34.661579162Z"
+    description: 'Apps and instances: a chart you can edit in the dashboard, deployed
+      by Fleet'
+    digest: 40e6e97e15058ff05d3d012593baa1e565c86c16b8fed306d8209b2bfec5d53b
+    icon: https://codyrancher.github.io/apps-plus/icon.svg
+    name: apps-plus
+    type: application
+    urls:
+    - https://github.com/codyrancher/apps-plus/releases/download/apps-plus-0.2.0/apps-plus-0.2.0.tgz
     version: 0.2.0
   - annotations:
       catalog.cattle.io/certified: rancher
@@ -45,4 +67,4 @@ entries:
     urls:
     - assets/apps-plus/apps-plus-0.1.3.tgz
     version: 0.1.3
-generated: "2026-09-16T23:05:15.86610638Z"
+generated: "2026-09-17T02:52:02.24510628Z"
