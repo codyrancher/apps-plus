@@ -15,20 +15,15 @@ typeLabel:
 
 appsPlus:
   helm:
-    importButton: Import Helm Chart
-    importTitle: Import Helm Chart Repository
+    importButton: Import Helm Charts
+    importTitle: Import Helm Charts
     importHint: Enter a Helm repository URL to automatically discover and import all charts and their versions as Apps.
     repoUrl: Helm Repository URL
     repoUrlPlaceholder: https://example.com/charts
-    loadCharts: Load Charts
     loadingCharts: Loading...
-    chart: Chart
-    version: Version
-    versionsCount: '{count} versions ({latest})'
-    chartsFoundTitle: '{count, plural, one {1 chart found in repository} other {# charts found in repository}}'
+    chartsFound: '{count, plural, one {1 chart found in repository} other {# charts found in repository}}'
     importAction: Import All Charts
     importing: Importing...
-    implicitDependenciesFound: 'Implicit dependencies detected on this chart: {deps}'
     detailBanner: 'Deploys Helm chart {chart} from {repo}'
   dependencies:
     hint: Add apps that must exist in Apps Plus before this app can be installed. Select an existing app from the dropdown or type a new app name to add a dependency that does not exist yet.
@@ -90,7 +85,6 @@ appsPlus:
   action:
     createApp: Create App
     createInstance: Install
-    redeploy: Redeploy
     appActions: 'Actions for {name}'
   list:
     noInstances: No installations of this app yet.
@@ -98,7 +92,6 @@ appsPlus:
     dependencyBadge: Dependency
     dependencyInstanceHint: Installed as a dependency of another app. Click to view dependent installations.
     needsAttention: '{count, plural, one {1 installation needs} other {# installations need}} values before the new template can be deployed.'
-    noApps: No apps yet. An app is a set of YAML templates or a Helm chart; an installation is one deployment of it.
     helmBadge: 'Helm: {chart}'
     dependsOn: 'Depends on: {deps}'
   headers:
@@ -113,7 +106,6 @@ appsPlus:
     repo: Repository
   app:
     templates: Templates
-    helmChart: Helm Chart
     dependencies: Dependencies
     provided: Provided automatically, in every template
     addTemplate: Create
@@ -138,7 +130,6 @@ appsPlus:
     values: Values
     valuesHint: Everything this app lets an installation set. A field left blank deploys with the default shown in it.
     noValues: This app has no values to set. It installs exactly as it is defined.
-    valueDefault: 'Blank uses the app default: {value}'
     valueNoDefault: Required
     valueMissing: The app has no default for this, so this installation has to supply it.
     deployed: Deployed Resources
