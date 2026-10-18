@@ -79,7 +79,44 @@ export const DETAIL_ROUTE = 'c-cluster-product-resource-id';
 // Which App a "Create Instance" button was pressed on, carried to the create form.
 export const APP_QUERY = 'app';
 
-// The identifier the builder's table action registers under, so this product's own models can
-// recognise it and leave it off their rows - staging an App into an App is meaningless, and
-// action registration has no way to say "every type but ours".
-export const ADD_TO_APP_ACTION = 'apps-plus-add-to-app';
+// Rancher's Helm chart repositories.
+export const CATALOG_CLUSTER_REPO = 'catalog.cattle.io.clusterrepo';
+
+// Annotations and label prefixes used by charts and apps to declare implicit dependencies.
+export const DEPENDENCIES_ANNOTATION = 'appsplus.io/dependencies';
+export const DEPENDS_ON_ANNOTATION = 'appsplus.io/depends-on';
+export const DEPENDS_ON_LABEL_PREFIX = 'depends-on.appsplus.io/';
+
+/**
+ * Parse a comma/whitespace-separated or JSON array string of dependency App names.
+ */
+export function parseDependencyList(raw?: string | null): string[] {
+  if (!raw || typeof raw !== 'string') {
+    return [];
+  }
+
+  const trimmed = raw.trim();
+
+  if (!trimmed) {
+    return [];
+  }
+
+  if (trimmed.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+
+      if (Array.isArray(parsed)) {
+        return parsed.map((d) => String(d || '').trim()).filter(Boolean);
+      }
+    } catch {
+      // Fall back to comma/whitespace splitting.
+    }
+  }
+
+  return trimmed
+    .split(/[,\s]+/)
+    .map((d) => d.trim())
+    .filter(Boolean);
+}
+
+

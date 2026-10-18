@@ -373,6 +373,11 @@ export default {
         :label="t('appsPlus.instance.preview')"
         :weight="10"
       >
+        <Banner
+          v-if="value.app?.isHelmChart"
+          color="info"
+          :label="t('appsPlus.helm.detailBanner', { chart: value.app.helmDisplay, repo: value.app.helmRepo || '—' })"
+        />
         <div
           v-for="file in resources"
           :key="file.name"
@@ -384,7 +389,7 @@ export default {
           <pre class="rendered__body">{{ file.content }}</pre>
         </div>
         <Banner
-          v-if="!resources.length"
+          v-if="!resources.length && !value.app?.isHelmChart"
           color="warning"
           :label="t('appsPlus.app.noTemplates')"
         />

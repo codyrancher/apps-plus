@@ -447,3 +447,66 @@ export function renderTemplates(app: any, instance: any): Template[] {
     content: substitute(template?.content || '', values, app?.spec?.values),
   }));
 }
+
+/**
+ * Flatten a nested Helm values.yaml object into dotted-path scalar keys so the Default Values
+ * table and the installation form can offer each leaf as a parameter.
+ */
+export function flattenValues(
+  input: Record<string, unknown> | undefined,
+  prefix = '',
+  out: Record<string, unknown> = {},
+): Record<string, unknown> {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    return out;
+  }
+
+  for (const [key, val] of Object.entries(input)) {
+    const path = prefix ? `${ prefix }.${ key }` : key;
+
+    if (val !== null && typeof val === 'object' && !Array.isArray(val)) {
+      if (Object.keys(val as Record<string, unknown>).length > 0) {
+        flattenValues(val as Record<string, unknown>, path, out);
+      }
+    } else if (typeof val === 'string' || typeof val === 'number' || typeof val === 'boolean') {
+      out[path] = val;
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Reconstruct a nested Helm values object from dotted-path keys for Bundle.spec.helm.values.
+ */
+export function unflattenValues(flat: Record<string, unknown> | undefined): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+
+  for (const [rawKey, value] of Object.entries(flat || {})) {
+    if (value === undefined) {
+      continue;
+    }
+
+    const parts = rawKey.split('.').filter(Boolean);
+
+    if (!parts.length) {
+      continue;
+    }
+
+    let cursor: Record<string, unknown> = out;
+
+    for (let i = 0; i < parts.length - 1; i++) {
+      const part = parts[i];
+
+      if (cursor[part] === null || typeof cursor[part] !== 'object' || Array.isArray(cursor[part])) {
+        cursor[part] = {};
+      }
+      cursor = cursor[part] as Record<string, unknown>;
+    }
+
+    cursor[parts[parts.length - 1]] = value;
+  }
+
+  return out;
+}
+

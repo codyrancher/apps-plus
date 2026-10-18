@@ -3,15 +3,14 @@ import SteveModel from '@shell/plugins/steve/steve-class';
 import {
   APP, FLEET_BUNDLE, FLEET_BUNDLE_DEPLOYMENT, FLEET_CLUSTER, BUNDLE_PREFIX, DEFAULT_WORKSPACE,
   DEFAULT_TARGET_NAMESPACE,
-  PROVISIONING_CLUSTER, PROVISION_WORKSPACE, PRODUCT_NAME, BLANK_CLUSTER, LIST_ROUTE, steveType,
-  ADD_TO_APP_ACTION
+  PROVISIONING_CLUSTER, PROVISION_WORKSPACE, PRODUCT_NAME, BLANK_CLUSTER, LIST_ROUTE, steveType
 } from '../config/types';
 import { NORMAN } from '@shell/config/types';
 import {
   DEFAULT_CLUSTER_TEMPLATE, DEFAULT_CLUSTER_VALUES, DEFAULT_CLUSTER_DRIVER
 } from '../config/cluster-template';
 import {
-  renderTemplates, mergeValues, substitute, missingValues, isSet
+  renderTemplates, mergeValues, substitute, missingValues, isSet, typedOverrides, unflattenValues
 } from '../render';
 
 /**
@@ -201,8 +200,12 @@ export default class AppInstance extends SteveModel {
     return missingValues(this.app, this);
   }
 
+  get missingDependencies() {
+    return this.app?.missingDependencies || [];
+  }
+
   get needsAttention() {
-    return this.missingValues.length > 0;
+    return this.missingValues.length > 0 || this.missingDependencies.length > 0;
   }
 
   get renderedResources() {
@@ -371,6 +374,10 @@ export default class AppInstance extends SteveModel {
       return 'removing';
     }
 
+    if (this.missingDependencies.length > 0) {
+      return 'error';
+    }
+
     // Ahead of everything else, because it is the only state a person has to act on: whatever
     // Fleet is doing, this instance is running an older render until its values are answered.
     if (this.needsAttention) {
@@ -413,6 +420,12 @@ export default class AppInstance extends SteveModel {
           `The cluster ${ this.clusterName } and everything it deployed are gone; finishing up.` :
           'What it deployed is gone; finishing up.';
       }
+    }
+
+    const missingDeps = this.missingDependencies;
+
+    if (missingDeps.length) {
+      return `Missing dependency app(s): ${ missingDeps.join(', ') }.`;
     }
 
     const missing = this.missingValues;
@@ -461,6 +474,12 @@ export default class AppInstance extends SteveModel {
    * targets it - though the Bundle does not wait for it, see syncBundle.
    */
   async save(opt) {
+    const missingDeps = await this.resolveMissingDependencies();
+
+    if (missingDeps.length > 0) {
+      throw new Error(`Cannot install "${ this.appDisplay }": required dependency app(s) do not exist: ${ missingDeps.join(', ') }.`);
+    }
+
     this.ensureFinalizer();
 
     const saved = await super.save(opt);
@@ -730,6 +749,12 @@ export default class AppInstance extends SteveModel {
    * Returns whether it actually reconciled, so callers can tell "up to date" from "held back".
    */
   async reconcile() {
+    const missingDeps = await this.resolveMissingDependencies();
+
+    if (missingDeps.length > 0) {
+      throw new Error(`Cannot deploy "${ this.appDisplay }": required dependency app(s) do not exist: ${ missingDeps.join(', ') }.`);
+    }
+
     if (this.needsAttention) {
       return false;
     }
@@ -738,6 +763,36 @@ export default class AppInstance extends SteveModel {
     await this.syncBundle();
 
     return true;
+  }
+
+  async resolveMissingDependencies() {
+    const app = await this.resolveApp();
+
+    if (!app) {
+      return [];
+    }
+
+    const deps = app.dependencies || [];
+
+    if (!deps.length) {
+      return [];
+    }
+
+    let allApps = [];
+
+    try {
+      allApps = await this.$dispatch('findAll', { type: APP });
+    } catch {
+      try {
+        allApps = this.$rootGetters['management/all'](APP) || [];
+      } catch {
+        allApps = [];
+      }
+    }
+
+    const existingNames = new Set((allApps || []).map((a) => a.metadata?.name));
+
+    return deps.filter((dep) => !existingNames.has(dep));
   }
 
   get ownerReference() {
@@ -960,28 +1015,44 @@ export default class AppInstance extends SteveModel {
     const app = await this.resolveApp();
     const resources = renderTemplates(app, this);
     const byWorkspace = await this.targetsByWorkspace();
+    const helmSpec = {
+      // Adopt objects that are already there rather than refusing them.
+      takeOwnership: true,
+    };
+
+    if (app?.isHelmChart) {
+      const helm = app.spec?.helm || {};
+      const merged = typedOverrides(mergeValues(app, this), app?.spec?.values || {});
+
+      if (helm.repo) {
+        helmSpec.repo = helm.repo;
+      }
+      if (helm.chart) {
+        helmSpec.chart = helm.chart;
+      }
+      if (helm.version) {
+        helmSpec.version = helm.version;
+      }
+      helmSpec.releaseName = helm.releaseName || this.metadata?.name || helm.chart;
+      if (Object.keys(merged).length > 0) {
+        helmSpec.values = unflattenValues(merged);
+      }
+    }
 
     for (const [namespace, targets] of byWorkspace) {
-      await this.writeBundle(namespace, {
-        resources,
+      const bundleSpec = {
         targets,
         // Fleet applies this to any rendered resource that does not name a namespace itself,
         // which is what makes one app deployable to different namespaces per instance.
         defaultNamespace: this.targetNamespace,
-        helm:             {
-          // Adopt objects that are already there rather than refusing them.
-          //
-          // Fleet installs a bundle as a Helm release, and Helm will not take an object it did
-          // not create: it wants `app.kubernetes.io/managed-by: Helm` and its two release
-          // annotations on the live object, and errors with "invalid ownership metadata" when
-          // they are missing. That is the right default for a chart. It is the wrong one here,
-          // because an app is routinely deployed into a cluster that already has the objects
-          // it configures - `rancher-ha` writes the `github` AuthConfig, which Rancher itself
-          // creates, empty and disabled, on its first start. Nothing in the app can fix that
-          // from its side: the check is against the object in the cluster, not the manifest.
-          takeOwnership: true,
-        },
-      });
+        helm:             helmSpec,
+      };
+
+      if (!app?.isHelmChart || resources.length > 0) {
+        bundleSpec.resources = resources;
+      }
+
+      await this.writeBundle(namespace, bundleSpec);
     }
 
     await this.pruneBundles([...byWorkspace.keys()]);
@@ -1001,7 +1072,10 @@ export default class AppInstance extends SteveModel {
       metadata: {
         name:            this.bundleName,
         namespace,
-        labels:          { 'appsplus.io/instance': this.metadata?.name },
+        labels:          {
+          'appsplus.io/instance': this.metadata?.name,
+          'appsplus.io/install':  this.metadata?.name,
+        },
         ownerReferences: [this.ownerReference],
       },
       spec,
@@ -1091,9 +1165,7 @@ export default class AppInstance extends SteveModel {
         enabled: !!this.spec?.app && !this.needsAttention,
       },
       { divider: true },
-      // Without the builder's own "Add to Application" - see the App model: staging this
-      // product's types into an App is meaningless, and registration cannot exclude a type.
-      ...super.availableActions.filter((action) => action.action !== ADD_TO_APP_ACTION),
+      ...super.availableActions,
     ];
   }
 

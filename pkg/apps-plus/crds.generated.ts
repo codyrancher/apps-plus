@@ -182,8 +182,36 @@ export const CRD_DEFINITIONS: Record<string, unknown>[] = [
                       },
                       "type": "array"
                     },
+                    "dependencies": {
+                      "description": "Names of other Apps that must exist before an installation of this App can be deployed.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
                     "description": {
                       "type": "string"
+                    },
+                    "helm": {
+                      "description": "Helm chart source for this app. When set, installations deploy this chart via Fleet's Bundle spec.helm.",
+                      "properties": {
+                        "chart": {
+                          "type": "string"
+                        },
+                        "clusterRepo": {
+                          "type": "string"
+                        },
+                        "releaseName": {
+                          "type": "string"
+                        },
+                        "repo": {
+                          "type": "string"
+                        },
+                        "version": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
                     },
                     "templates": {
                       "description": "The chart. Each entry is one YAML file applied to every target.",

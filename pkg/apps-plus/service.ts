@@ -352,7 +352,21 @@ async function resolveTarget(): Promise<Target> {
  */
 export async function ensureService(): Promise<void> {
   for (const crd of CRD_DEFINITIONS) {
-    await createIfAbsent('apiextensions.k8s.io.customresourcedefinitions', undefined, (crd as any).metadata.name, crd);
+    const name = (crd as any).metadata.name;
+    const url = objectUrl('apiextensions.k8s.io.customresourcedefinitions', undefined, name);
+    const existing = await rancherFetch(url).catch(() => null);
+
+    if (!existing) {
+      await rancherFetch(`${ BASE }/v1/apiextensions.k8s.io.customresourcedefinitions`, {
+        method: 'POST',
+        body:   JSON.stringify(crd),
+      }).catch(() => null);
+    } else if (JSON.stringify(existing.spec?.versions) !== JSON.stringify((crd as any).spec?.versions)) {
+      await rancherFetch(url, {
+        method: 'PUT',
+        body:   JSON.stringify({ ...existing, spec: (crd as any).spec }),
+      }).catch(() => null);
+    }
   }
 
   const target = await resolveTarget();

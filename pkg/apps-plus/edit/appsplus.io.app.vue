@@ -2,15 +2,24 @@
 import CreateEditView from '@shell/mixins/create-edit-view';
 import CruResource from '@shell/components/CruResource';
 import NameNsDescription from '@shell/components/form/NameNsDescription';
+import LabeledSelect from '@shell/components/form/LabeledSelect';
 import { LabeledInput } from '@components/Form/LabeledInput';
 import ValuesEditor from '../components/ValuesEditor';
 import ImportResourceModal from '../components/ImportResourceModal';
+import ImportHelmChartModal from '../components/ImportHelmChartModal';
 import YamlEditor from '@shell/components/YamlEditor';
 import Tabbed from '@shell/components/Tabbed';
 import Tab from '@shell/components/Tabbed/Tab';
 import { Banner } from '@components/Banner';
 import { RcButton } from '@components/RcButton';
 import { DEFAULT_CLUSTER_TEMPLATE } from '../config/cluster-template';
+import {
+  APP,
+  DEPENDENCIES_ANNOTATION,
+  DEPENDS_ON_ANNOTATION,
+  DEPENDS_ON_LABEL_PREFIX,
+  parseDependencyList,
+} from '../config/types';
 import {
   requiredValues, appVariables, undeclaredWarnings, referencedVariables, DOCUMENTED_VALUES, BUILT_IN_VALUES
 } from '../render';
@@ -20,10 +29,9 @@ const NEW_TEMPLATE = () => ({ name: 'resource.yaml', content: '' });
 /**
  * Creating and editing an App: the chart half of this extension.
  *
- * An app is its templates, and a template is a YAML file rather than a form, so this is
- * mostly an editor and a file list. `spec` is initialised here rather than defaulted in the
- * CRD, because a create form starts from an empty resource and every field below binds
- * straight into it.
+ * An app is its templates (or Helm chart reference), its dependencies, and the values it
+ * renders with. `spec` is initialised here rather than defaulted in the CRD, because a create
+ * form starts from an empty resource and every field below binds straight into it.
  */
 export default {
   name:         'CruApp',
@@ -32,9 +40,11 @@ export default {
   components: {
     CruResource,
     NameNsDescription,
+    LabeledSelect,
     LabeledInput,
     ValuesEditor,
     ImportResourceModal,
+    ImportHelmChartModal,
     YamlEditor,
     Tabbed,
     Tab,
@@ -43,6 +53,10 @@ export default {
   },
 
   mixins: [CreateEditView],
+
+  async fetch() {
+    await this.$store.dispatch('management/findAll', { type: APP }).catch(() => []);
+  },
 
   data() {
     if (!this.value.spec) {
@@ -59,14 +73,79 @@ export default {
       spec.values = {};
     }
 
-    // clusterTemplateKey and templatesKey remount a YAML editor; see
-    // useDefaultClusterTemplate and onTabChanged for the two reasons that is needed.
+    if (!Array.isArray(spec.dependencies)) {
+      spec.dependencies = [];
+    }
+
+    if (!spec.helm) {
+      spec.helm = {};
+    }
+
     return {
-      selected: 0, clusterTemplateKey: 0, templatesKey: 0, importing: false,
+      selected:           0,
+      clusterTemplateKey: 0,
+      templatesKey:       0,
+      importing:          false,
+      importingHelm:      false,
+      newDependency:      '',
     };
   },
 
   computed: {
+    allApps() {
+      return this.$store.getters['management/all'](APP) || [];
+    },
+
+    existingAppNames() {
+      return new Set(this.allApps.map((app) => app.metadata?.name).filter(Boolean));
+    },
+
+    explicitDependencies() {
+      return Array.isArray(this.value.spec?.dependencies) ? this.value.spec.dependencies : [];
+    },
+
+    implicitDependencies() {
+      const annotations = this.value.metadata?.annotations || {};
+      const labels = this.value.metadata?.labels || {};
+      const fromAnnotations = [
+        ...parseDependencyList(annotations[DEPENDENCIES_ANNOTATION]),
+        ...parseDependencyList(annotations[DEPENDS_ON_ANNOTATION]),
+      ];
+      const fromLabels = Object.entries(labels)
+        .filter(([k, v]) => k.startsWith(DEPENDS_ON_LABEL_PREFIX) && v !== 'false' && v !== '0')
+        .map(([k]) => k.slice(DEPENDS_ON_LABEL_PREFIX.length).trim())
+        .filter(Boolean);
+
+      return [...new Set([...fromAnnotations, ...fromLabels])];
+    },
+
+    allDependencies() {
+      const explicitSet = new Set(this.explicitDependencies);
+      const implicitSet = new Set(this.implicitDependencies);
+      const combined = [...new Set([...this.explicitDependencies, ...this.implicitDependencies])];
+
+      return combined.map((name) => ({
+        name,
+        explicit: explicitSet.has(name),
+        implicit: implicitSet.has(name),
+        exists:   this.existingAppNames.has(name),
+      }));
+    },
+
+    dependencyOptions() {
+      const selfName = this.value.metadata?.name;
+      const currentDeps = new Set(this.allDependencies.map((d) => d.name));
+
+      return this.allApps
+        .map((app) => app.metadata?.name)
+        .filter((name) => name && name !== selfName && !currentDeps.has(name))
+        .sort()
+        .map((name) => ({
+          label: name,
+          value: name,
+        }));
+    },
+
     /** The variables every template gets for free. See DOCUMENTED_VALUES for what is left out. */
     documentedValues() {
       return DOCUMENTED_VALUES;
@@ -75,13 +154,6 @@ export default {
     /**
      * The keys the values editor offers: the parameters this app declares (see appVariables),
      * plus every `${...}` its templates mention that nothing declared.
-     *
-     * The second half is a suggestion, not a scrape into `substitute`: a hand-written
-     * `${maxmemory}` shows up in the dropdown so declaring it is one click, while a script's
-     * `${TOKEN}` appearing as an option someone ignores costs nothing. The cluster template is
-     * included, because the app owns that too and defaulting something like `instanceType`
-     * there is an ordinary thing to want. The built-ins are dropped - they are always
-     * satisfied, so a default for `app` or `namespace` would shadow the real one.
      */
     valueKeys() {
       const found = new Set(appVariables(this.value, true));
@@ -118,26 +190,10 @@ export default {
       return this.templates[this.selected] || null;
     },
 
-    /**
-     * Variables the templates use that this app has no default for. Every instance has to
-     * supply each of these, and adding one is what puts existing instances into a warning
-     * state - so it is worth seeing while editing, not after saving.
-     *
-     * Both installation modes, because they owe different things: only a provisioning install
-     * renders the cluster template, and only for one do the cluster defaults answer. Either
-     * kind of installation being asked for a value is worth warning the definer about.
-     */
     required() {
       return [...new Set([...requiredValues(this.value), ...requiredValues(this.value, true)])];
     },
 
-    /**
-     * Templates using `${...}` this app does not declare, shaped for the banner.
-     *
-     * Live, so declaring one (or toggling it off in the picker) clears its warning while the
-     * form is still open. What it does not do is block saving: the `${...}` may be the file's
-     * own syntax, and deploying it as written is a legitimate thing to mean.
-     */
     undeclared() {
       return undeclaredWarnings(this.value);
     },
@@ -153,14 +209,6 @@ export default {
       this.selected = this.templates.length - 1;
     },
 
-    /**
-     * Take what the import produced and make it the template being edited.
-     *
-     * The values it suggests are merged under what is already there rather than over it: an app
-     * that has already answered `replicas` said so deliberately, and an import is not a reason
-     * to overwrite it. A file name that is already taken gets a number, because two templates
-     * with one name is a save that silently keeps one of them.
-     */
     addImported(imported) {
       const taken = new Set(this.templates.map((template) => template.name));
       let name = imported.name;
@@ -175,6 +223,74 @@ export default {
       this.values = { ...imported.values, ...this.values };
     },
 
+    addImportedHelm(imported) {
+      if (!this.value.metadata.name && imported.name) {
+        this.value.metadata.name = imported.name;
+      }
+      if (!this.value.spec.description && imported.description) {
+        this.value.spec.description = imported.description;
+      }
+
+      this.value.spec.helm = { ...(imported.helm || {}) };
+      this.values = { ...(imported.values || {}), ...this.values };
+
+      if (!this.value.metadata.annotations) {
+        this.value.metadata.annotations = {};
+      }
+      Object.assign(this.value.metadata.annotations, imported.annotations || {});
+    },
+
+    clearHelmChart() {
+      this.value.spec.helm = {};
+    },
+
+    addDependency() {
+      const raw = typeof this.newDependency === 'object' ? this.newDependency?.value || this.newDependency?.label : this.newDependency;
+      const name = String(raw || '').trim();
+
+      if (!name) {
+        return;
+      }
+
+      if (!Array.isArray(this.value.spec.dependencies)) {
+        this.value.spec.dependencies = [];
+      }
+
+      if (!this.value.spec.dependencies.includes(name)) {
+        this.value.spec.dependencies.push(name);
+      }
+
+      this.newDependency = '';
+    },
+
+    removeDependency(name) {
+      if (Array.isArray(this.value.spec.dependencies)) {
+        this.value.spec.dependencies = this.value.spec.dependencies.filter((d) => d !== name);
+      }
+
+      const annotations = this.value.metadata?.annotations;
+
+      if (annotations) {
+        [DEPENDENCIES_ANNOTATION, DEPENDS_ON_ANNOTATION].forEach((key) => {
+          if (annotations[key]) {
+            const remaining = parseDependencyList(annotations[key]).filter((d) => d !== name);
+
+            if (remaining.length) {
+              annotations[key] = remaining.join(',');
+            } else {
+              delete annotations[key];
+            }
+          }
+        });
+      }
+
+      const labels = this.value.metadata?.labels;
+
+      if (labels && labels[`${ DEPENDS_ON_LABEL_PREFIX }${ name }`]) {
+        delete labels[`${ DEPENDS_ON_LABEL_PREFIX }${ name }`];
+      }
+    },
+
     removeTemplate(index) {
       this.templates.splice(index, 1);
       this.selected = Math.max(0, Math.min(this.selected, this.templates.length - 1));
@@ -186,23 +302,6 @@ export default {
       }
     },
 
-    /**
-     * Put the default template in the editor.
-     *
-     * The bump is what makes it appear. YamlEditor wraps CodeMirror, which takes its content
-     * when it is created and does not watch the prop afterwards - so assigning the value alone
-     * updated the model and left the box empty, and the button read as doing nothing at all.
-     * Changing the key remounts the editor around the new content.
-     */
-    /**
-     * Remount the template editor when its tab is shown.
-     *
-     * CodeMirror measures itself when it is created, and a tab that is not the first one is
-     * created hidden - so it comes up as a box of no height with nothing in it. This was
-     * invisible while the editor sat behind a second tab of its own, because clicking that tab
-     * mounted it fresh; the moment Cluster Template became the first tab, the Templates editor
-     * was the one being built in the dark.
-     */
     onTabChanged({ selectedName }) {
       if (selectedName === 'templates') {
         this.templatesKey++;
@@ -230,13 +329,6 @@ export default {
     @finish="save"
     @cancel="done"
   >
-    <!--
-      `description-key` because an App keeps its description in `spec.description`, which is
-      where the CRD declares it and where the list reads it from. Left to itself
-      NameNsDescription reads and writes the field.cattle.io/description annotation instead, so
-      the box came up empty on an app that plainly had a description, and typing one put it
-      somewhere nothing looks.
-    -->
     <NameNsDescription
       class="fill-row"
       :value="value"
@@ -251,9 +343,34 @@ export default {
       @changed="onTabChanged"
     >
       <Tab
+        name="values"
+        :label="t('appsPlus.app.values')"
+        :weight="4"
+        :error="!!undeclared.length"
+      >
+        <Banner
+          v-for="reference in undeclared"
+          :key="reference.file"
+          color="warning"
+          :label="t('appsPlus.values.undeclared', reference) + ' ' + t('appsPlus.values.undeclaredDeclareBelow')"
+        />
+        <Banner
+          v-if="required.length"
+          color="warning"
+          :label="t('appsPlus.app.requiredValues', { keys: required.join(', ') })"
+        />
+        <ValuesEditor
+          v-model:value="values"
+          :mode="mode"
+          :keys="valueKeys"
+          :placeholder="t('appsPlus.app.valueKeyPlaceholder')"
+        />
+      </Tab>
+
+      <Tab
         name="templates"
         :label="t('appsPlus.app.templates')"
-        :weight="1"
+        :weight="3"
       >
         <div class="template-editor">
           <div class="file-list">
@@ -272,11 +389,6 @@ export default {
                 />
               </li>
             </ul>
-            <!--
-              Both tertiary. These are two ways of doing the same ordinary thing - putting a
-              file in the list - and neither is the action of the page: that is Save, at the
-              bottom, and it is the only thing here that should be wearing the accent colour.
-            -->
             <div
               v-if="!isView"
               class="file-list__buttons"
@@ -305,13 +417,6 @@ export default {
                 :label="t('appsPlus.app.fileName')"
               />
 
-              <!--
-                The YAML, and only the YAML. A field picker sat in front of it once, on a tab -
-                but the place to say which fields an installation may set is the resource's own
-                edit page in the builder drawer, where the field is a labelled input with a
-                switch beside it rather than a path in a list. Two ways to do one thing, and
-                this was the worse one.
-              -->
               <YamlEditor
                 :key="`${ selected }-${ templatesKey }`"
                 :value="current.content"
@@ -323,45 +428,178 @@ export default {
             </template>
             <Banner
               v-else
-              color="warning"
+              color="info"
               :label="t('appsPlus.app.noTemplates')"
             />
           </div>
         </div>
 
-        <!-- Only on create: this page is the long way to an app, and somebody arriving here
-             cold deserves to hear about the short one before they start typing YAML. -->
-        <p
-          v-if="isCreate"
-          class="collect-hint text-muted"
-        >
-          {{ t('appsPlus.app.collectHint') }}
-        </p>
-
-        <!--
-          Under the editor rather than above it: it is a reference somebody looks down at while
-          typing, not something to read before starting.
-        -->
         <div class="provided">
           <div class="provided__title">
             {{ t('appsPlus.app.provided') }}
           </div>
           <ul class="provided__list">
             <li
-              v-for="value in documentedValues"
-              :key="value.name"
+              v-for="val in documentedValues"
+              :key="val.name"
             >
-              <code>${{ '{' }}{{ value.name }}{{ '}' }}</code>
-              <span class="provided__what">{{ value.what }}</span>
+              <code>${{ '{' }}{{ val.name }}{{ '}' }}</code>
+              <span class="provided__what">{{ val.what }}</span>
             </li>
           </ul>
         </div>
       </Tab>
 
       <Tab
+        name="helm"
+        :label="t('appsPlus.app.helmChart')"
+        :weight="2"
+      >
+        <Banner
+          color="info"
+          :label="t('appsPlus.helm.tabHint')"
+        />
+
+        <div
+          v-if="!isView"
+          class="mb-20"
+        >
+          <RcButton
+            variant="secondary"
+            class="mr-10"
+            data-testid="app-edit-import-helm-btn"
+            @click="importingHelm = true"
+          >
+            {{ t('appsPlus.helm.importButton') }}
+          </RcButton>
+          <RcButton
+            v-if="value.spec.helm?.chart"
+            variant="tertiary"
+            @click="clearHelmChart"
+          >
+            {{ t('appsPlus.helm.clearChart') }}
+          </RcButton>
+        </div>
+
+        <div class="row mb-15">
+          <div class="col span-6">
+            <LabeledInput
+              v-model:value="value.spec.helm.repo"
+              :mode="mode"
+              :label="t('appsPlus.helm.repoUrl')"
+              :placeholder="t('appsPlus.helm.repoUrlPlaceholder')"
+            />
+          </div>
+          <div class="col span-6">
+            <LabeledInput
+              v-model:value="value.spec.helm.chart"
+              :mode="mode"
+              :label="t('appsPlus.helm.chart')"
+            />
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="col span-6">
+            <LabeledInput
+              v-model:value="value.spec.helm.version"
+              :mode="mode"
+              :label="t('appsPlus.helm.version')"
+            />
+          </div>
+          <div class="col span-6">
+            <LabeledInput
+              v-model:value="value.spec.helm.releaseName"
+              :mode="mode"
+              :label="t('appsPlus.helm.releaseName')"
+            />
+          </div>
+        </div>
+      </Tab>
+
+      <Tab
+        name="dependencies"
+        :label="t('appsPlus.app.dependencies')"
+        :weight="1"
+      >
+        <Banner
+          color="info"
+          :label="t('appsPlus.dependencies.hint')"
+        />
+
+        <div
+          v-if="!isView"
+          class="dependencies-add mb-20"
+        >
+          <LabeledSelect
+            v-model:value="newDependency"
+            class="dependencies-add__select"
+            :mode="mode"
+            :options="dependencyOptions"
+            :taggable="true"
+            :searchable="true"
+            :label="t('appsPlus.dependencies.selectLabel')"
+            :placeholder="t('appsPlus.dependencies.selectPlaceholder')"
+            data-testid="dependency-select"
+          />
+          <RcButton
+            variant="secondary"
+            class="dependencies-add__btn"
+            :disabled="!newDependency"
+            data-testid="add-dependency-btn"
+            @click="addDependency"
+          >
+            {{ t('appsPlus.dependencies.add') }}
+          </RcButton>
+        </div>
+
+        <div
+          v-if="allDependencies.length"
+          class="dependencies-list"
+        >
+          <div
+            v-for="dep in allDependencies"
+            :key="dep.name"
+            class="dependencies-list__row"
+            data-testid="dependency-row"
+          >
+            <div class="dependencies-list__info">
+              <span class="dependencies-list__name">{{ dep.name }}</span>
+              <span
+                v-if="dep.implicit"
+                class="dependencies-list__badge"
+              >
+                {{ t('appsPlus.dependencies.implicit') }}
+              </span>
+              <span
+                class="dependencies-list__status"
+                :class="dep.exists ? 'dependencies-list__status--ok' : 'dependencies-list__status--missing'"
+              >
+                {{ dep.exists ? t('appsPlus.dependencies.exists') : t('appsPlus.dependencies.notFound') }}
+              </span>
+            </div>
+            <RcButton
+              v-if="!isView"
+              variant="tertiary"
+              size="sm"
+              data-testid="remove-dependency-btn"
+              @click="removeDependency(dep.name)"
+            >
+              {{ t('appsPlus.dependencies.remove') }}
+            </RcButton>
+          </div>
+        </div>
+        <Banner
+          v-else
+          color="info"
+          :label="t('appsPlus.dependencies.empty')"
+        />
+      </Tab>
+
+      <Tab
         name="cluster"
         :label="t('appsPlus.app.clusterTemplate')"
-        :weight="2"
+        :weight="0"
       >
         <Banner
           color="info"
@@ -384,36 +622,6 @@ export default {
           {{ t('appsPlus.app.useDefaultCluster') }}
         </rc-button>
       </Tab>
-
-      <Tab
-        name="values"
-        :label="t('appsPlus.app.values')"
-        :weight="0"
-        :error="!!undeclared.length"
-      >
-        <Banner
-          v-for="reference in undeclared"
-          :key="reference.file"
-          color="warning"
-          :label="t('appsPlus.values.undeclared', reference) + ' ' + t('appsPlus.values.undeclaredDeclareBelow')"
-        />
-        <Banner
-          v-if="required.length"
-          color="warning"
-          :label="t('appsPlus.app.requiredValues', { keys: required.join(', ') })"
-        />
-        <!--
-          Where parameters are declared. A key here is what makes `${key}` in a template mean
-          something - the picker adds one per toggle, and this table is where a hand-written
-          `${...}` gets declared and defaulted.
-        -->
-        <ValuesEditor
-          v-model:value="values"
-          :mode="mode"
-          :keys="valueKeys"
-          :placeholder="t('appsPlus.app.valueKeyPlaceholder')"
-        />
-      </Tab>
     </Tabbed>
 
     <ImportResourceModal
@@ -422,34 +630,86 @@ export default {
       @close="importing = false"
       @imported="addImported"
     />
+
+    <ImportHelmChartModal
+      v-if="importingHelm"
+      :create-app="false"
+      @close="importingHelm = false"
+      @imported="addImportedHelm"
+    />
   </CruResource>
 </template>
 
 <style lang="scss" scoped>
-/**
- * Name and Description across the whole row.
- *
- * NameNsDescription sizes its columns from `cols = 2 + (description ? 1 : 0)`, where the 2 is
- * "name and namespace" counted together - and it counts them whether or not `namespaced` is
- * false. This form is not namespaced, so it renders two fields and reserves width for three,
- * leaving a third of the row empty. Overriding the span here rather than asking the shell for
- * another prop: the arithmetic is right for every other caller.
- *
- * Flex shares, not `width: 50%`: the shell's `.col` carries a gutter margin, so two hard halves
- * total more than the row and the page grows a horizontal scrollbar. Growing into what is left
- * after the gutter cannot overflow.
- */
 :deep(.fill-row) > .col {
   flex:  1 1 0;
   width: auto;
 }
 
+.dependencies-add {
+  display:     flex;
+  align-items: center;
+  gap:         10px;
 
+  &__select {
+    flex: 1;
+  }
 
-.collect-hint {
-  margin-top: 16px;
-  margin-bottom: 0;
-  font-size: 12px;
+  &__btn {
+    white-space: nowrap;
+  }
+}
+
+.dependencies-list {
+  display:        flex;
+  flex-direction: column;
+  gap:            8px;
+
+  &__row {
+    display:         flex;
+    align-items:     center;
+    justify-content: space-between;
+    padding:         8px 12px;
+    border:          1px solid var(--border);
+    border-radius:   var(--border-radius);
+    background:      var(--box-bg);
+  }
+
+  &__info {
+    display:     flex;
+    align-items: center;
+    gap:         10px;
+  }
+
+  &__name {
+    font-family: monospace;
+    font-weight: 600;
+  }
+
+  &__badge {
+    padding:       1px 8px;
+    border-radius: var(--border-radius);
+    background:    var(--accent-btn);
+    color:         var(--link);
+    border:        1px solid var(--link);
+    font-size:     11px;
+  }
+
+  &__status {
+    padding:       1px 8px;
+    border-radius: var(--border-radius);
+    font-size:     11px;
+
+    &--ok {
+      background: var(--success-banner-bg, rgba(46, 160, 67, 0.15));
+      color:      var(--success);
+    }
+
+    &--missing {
+      background: var(--warning-badge, var(--warning-banner));
+      color:      var(--on-warning-banner);
+    }
+  }
 }
 
 .provided {
@@ -489,14 +749,11 @@ export default {
   gap: 16px;
 
   .file-list {
-  &__buttons {
-    display: flex;
-    gap:     8px;
-  }
+    &__buttons {
+      display: flex;
+      gap:     8px;
+    }
 
-    // A preferred width, not a claim: with the builder drawer open this whole form may have
-    // ~700px, and a list that refuses to shrink passes the entire squeeze on to the field
-    // picker beside it. The names ellipsize; the picker's inputs cannot.
     flex:      0 1 220px;
     min-width: 0;
 

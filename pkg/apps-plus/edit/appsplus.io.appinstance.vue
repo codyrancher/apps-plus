@@ -191,6 +191,32 @@ export default {
       return renderTemplates(this.selectedApp, this.value);
     },
 
+    helmPreview() {
+      if (!this.selectedApp?.isHelmChart) {
+        return '';
+      }
+
+      const helm = this.selectedApp.spec?.helm || {};
+
+      return JSON.stringify({
+        repo:        helm.repo || '',
+        chart:       helm.chart || '',
+        version:     helm.version || '',
+        releaseName: helm.releaseName || this.value.metadata?.name || helm.chart || '',
+        values:      { ...(this.selectedApp.spec?.values || {}), ...(this.values || {}) },
+      }, null, 2);
+    },
+
+    missingDependencies() {
+      if (!this.selectedApp) {
+        return [];
+      }
+
+      const existing = new Set(this.apps.map((a) => a.metadata?.name).filter(Boolean));
+
+      return (this.selectedApp.dependencies || []).filter((dep) => !existing.has(dep));
+    },
+
     /**
      * The instance's values, edited in place.
      *
@@ -460,6 +486,13 @@ export default {
     </div>
 
     <Banner
+      v-if="missingDependencies.length"
+      color="error"
+      data-testid="missing-dependency-banner"
+      :label="t('appsPlus.instance.missingDependenciesError', { app: selectedApp?.nameDisplay || value.spec.app, deps: missingDependencies.join(', ') })"
+    />
+
+    <Banner
       v-if="missing.length"
       color="warning"
       :label="t('appsPlus.instance.missingValuesSummary', { keys: missing.join(', ') })"
@@ -581,6 +614,15 @@ export default {
           color="warning"
           :label="t('appsPlus.instance.noApp')"
         />
+        <div
+          v-if="helmPreview"
+          class="rendered"
+        >
+          <div class="rendered__name">
+            {{ selectedApp.helmDisplay }}
+          </div>
+          <pre class="rendered__body">{{ helmPreview }}</pre>
+        </div>
         <div
           v-for="file in preview"
           :key="file.name"

@@ -79,6 +79,29 @@ spec:
                     A provisioning.cattle.io Cluster manifest, for instances of this app that
                     provision their own. Rendered with the same values as the templates above.
                     Only its spec is used; name, workspace and ownership belong to the instance.
+                helm:
+                  type: object
+                  description: >-
+                    Helm chart source for this app. When set, installations deploy this chart
+                    via Fleet's Bundle spec.helm.
+                  properties:
+                    repo:
+                      type: string
+                    chart:
+                      type: string
+                    version:
+                      type: string
+                    releaseName:
+                      type: string
+                    clusterRepo:
+                      type: string
+                dependencies:
+                  type: array
+                  description: >-
+                    Names of other Apps that must exist before an installation of this App can
+                    be deployed.
+                  items:
+                    type: string
             status:
               type: object
               x-kubernetes-preserve-unknown-fields: true

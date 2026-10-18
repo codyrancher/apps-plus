@@ -3,6 +3,7 @@ import ResourceTable from '@shell/components/ResourceTable';
 import { STATE, AGE } from '@shell/config/table-headers';
 import { RcButton } from '@components/RcButton';
 import ActionMenu from '@shell/components/ActionMenuShell.vue';
+import ImportHelmChartModal from '../components/ImportHelmChartModal.vue';
 import {
   APP, APP_INSTANCE, FLEET_BUNDLE, PROVISIONING_CLUSTER
 } from '../config/types';
@@ -31,7 +32,7 @@ export default {
   inheritAttrs: false,
 
   components: {
-    ResourceTable, RcButton, ActionMenu
+    ResourceTable, RcButton, ActionMenu, ImportHelmChartModal
   },
 
   props: {
@@ -122,10 +123,10 @@ export default {
           sort:     ['nameSort'],
         },
         {
-          name:      'clusters',
-          labelKey:  'appsPlus.headers.clusters',
-          value:     'targetDisplay',
-          sort:      ['targetDisplay'],
+          name:        'clusters',
+          labelKey:    'appsPlus.headers.clusters',
+          value:       'targetDisplay',
+          sort:        ['targetDisplay'],
           dashIfEmpty: true,
         },
         {
@@ -149,7 +150,10 @@ export default {
   },
 
   data() {
-    return { sweep: null };
+    return {
+      sweep:         null,
+      importingHelm: false,
+    };
   },
 
   /**
@@ -204,100 +208,142 @@ export default {
     attentionCount(group) {
       return (group?.rows || []).filter((row) => row.needsAttention).length;
     },
+
+    async onHelmImported() {
+      await this.$store.dispatch('management/findAll', { type: APP, opt: { force: true } });
+    },
   },
 };
 </script>
 
 <template>
-  <ResourceTable
-    class="apps-plus-list"
-    :schema="instanceSchema"
-    :headers="headers"
-    :rows="tableRows"
-    :loading="loading || $fetchState.pending"
-    group-by="groupById"
-    :groupable="true"
-    group-tooltip="appsPlus.headers.app"
-    key-field="_key"
-  >
-    <template #group-by="group">
-      <div class="app-bar">
-        <div
-          v-trim-whitespace
-          class="group-tab"
-        >
-          <div class="app-name">
-            <router-link
-              v-if="appFor(group.group)?.detailLocation"
-              :to="appFor(group.group).detailLocation"
-            >
-              {{ appFor(group.group).nameDisplay }}
-            </router-link>
-            <span v-else>{{ appFor(group.group)?.nameDisplay }}</span>
-            <!-- The title repeats the text because the badge is the part that clips at narrow
-                 widths, and an ellipsis with no way to read the rest is a dead end. -->
-            <span
-              v-if="attentionCount(group.group)"
-              class="attention"
-              :title="t('appsPlus.list.needsAttention', { count: attentionCount(group.group) })"
-            >
-              {{ t('appsPlus.list.needsAttention', { count: attentionCount(group.group) }) }}
-            </span>
-          </div>
-          <!-- One line, and the whole thing on hover. A description long enough to wrap used to
-               push the group header past the row it heads and cover the installation under it. -->
-          <div
-            v-if="appFor(group.group)?.description"
-            v-clean-tooltip="appFor(group.group).description"
-            class="description text-muted text-small"
-          >
-            {{ appFor(group.group).description }}
-          </div>
-        </div>
-        <div class="right mr-10">
-          <rc-button
-            v-if="appFor(group.group)"
-            variant="secondary"
-            class="mr-5"
-            :to="appFor(group.group).createInstanceLocation"
-          >
-            {{ t('appsPlus.action.createInstance') }}
-          </rc-button>
-          <ActionMenu
-            v-if="appFor(group.group)"
-            :resource="appFor(group.group)"
-            data-testid="app-actions"
-            :button-aria-label="t('appsPlus.action.appActions', { name: appFor(group.group).nameDisplay })"
-          />
-        </div>
-      </div>
-    </template>
-
-    <template #cell:name="{row}">
-      <router-link
-        v-if="row.detailLocation"
-        :to="row.detailLocation"
-      >
-        {{ row.nameDisplay }}
-      </router-link>
-      <span v-else>{{ row.nameDisplay }}</span>
-    </template>
-
-    <template
-      v-for="app in emptyApps"
-      :key="app.id"
-      #[placeholderSlot(app)]="{ fullColspan }"
+  <div>
+    <ResourceTable
+      class="apps-plus-list"
+      :schema="instanceSchema"
+      :headers="headers"
+      :rows="tableRows"
+      :loading="loading || $fetchState.pending"
+      group-by="groupById"
+      :groupable="true"
+      group-tooltip="appsPlus.headers.app"
+      key-field="_key"
     >
-      <tr class="main-row">
-        <td
-          class="empty text-center"
-          :colspan="fullColspan"
+      <template #header-right>
+        <RcButton
+          variant="secondary"
+          class="mr-10"
+          data-testid="import-helm-chart-btn"
+          @click="importingHelm = true"
         >
-          {{ t('appsPlus.list.noInstances') }}
-        </td>
-      </tr>
-    </template>
-  </ResourceTable>
+          {{ t('appsPlus.helm.importButton') }}
+        </RcButton>
+      </template>
+
+      <template #group-by="group">
+        <div class="app-bar">
+          <div
+            v-trim-whitespace
+            class="group-tab"
+          >
+            <div class="app-name">
+              <router-link
+                v-if="appFor(group.group)?.detailLocation"
+                :to="appFor(group.group).detailLocation"
+              >
+                {{ appFor(group.group).nameDisplay }}
+              </router-link>
+              <span v-else>{{ appFor(group.group)?.nameDisplay }}</span>
+
+              <span
+                v-if="appFor(group.group)?.isHelmChart"
+                class="helm-badge"
+                :title="appFor(group.group).helmRepo ? `${appFor(group.group).helmDisplay} — ${appFor(group.group).helmRepo}` : appFor(group.group).helmDisplay"
+              >
+                {{ t('appsPlus.list.helmBadge', { chart: appFor(group.group).helmDisplay }) }}
+              </span>
+
+              <span
+                v-if="appFor(group.group)?.dependencies?.length"
+                class="dep-badge"
+                :class="{ 'dep-badge--missing': appFor(group.group).missingDependencies?.length }"
+                :title="t('appsPlus.list.dependsOn', { deps: appFor(group.group).dependencies.join(', ') })"
+              >
+                {{ t('appsPlus.list.dependsOn', { deps: appFor(group.group).dependencies.join(', ') }) }}
+              </span>
+
+              <!-- The title repeats the text because the badge is the part that clips at narrow
+                   widths, and an ellipsis with no way to read the rest is a dead end. -->
+              <span
+                v-if="attentionCount(group.group)"
+                class="attention"
+                :title="t('appsPlus.list.needsAttention', { count: attentionCount(group.group) })"
+              >
+                {{ t('appsPlus.list.needsAttention', { count: attentionCount(group.group) }) }}
+              </span>
+            </div>
+            <!-- One line, and the whole thing on hover. A description long enough to wrap used to
+                 push the group header past the row it heads and cover the installation under it. -->
+            <div
+              v-if="appFor(group.group)?.description"
+              v-clean-tooltip="appFor(group.group).description"
+              class="description text-muted text-small"
+            >
+              {{ appFor(group.group).description }}
+            </div>
+          </div>
+          <div class="right mr-10">
+            <rc-button
+              v-if="appFor(group.group)"
+              variant="secondary"
+              class="mr-5"
+              @click="$router.push(appFor(group.group).createInstanceLocation)"
+            >
+              {{ t('appsPlus.action.createInstance') }}
+            </rc-button>
+            <ActionMenu
+              v-if="appFor(group.group)"
+              :resource="appFor(group.group)"
+              data-testid="app-actions"
+              :button-aria-label="t('appsPlus.action.appActions', { name: appFor(group.group).nameDisplay })"
+            />
+          </div>
+        </div>
+      </template>
+
+      <template #cell:name="{row}">
+        <router-link
+          v-if="row.detailLocation"
+          :to="row.detailLocation"
+        >
+          {{ row.nameDisplay }}
+        </router-link>
+        <span v-else>{{ row.nameDisplay }}</span>
+      </template>
+
+      <template
+        v-for="app in emptyApps"
+        :key="app.id"
+        #[placeholderSlot(app)]="{ fullColspan }"
+      >
+        <tr class="main-row">
+          <td
+            class="empty text-center"
+            :colspan="fullColspan"
+          >
+            {{ t('appsPlus.list.noInstances') }}
+          </td>
+        </tr>
+      </template>
+    </ResourceTable>
+
+    <ImportHelmChartModal
+      v-if="importingHelm"
+      :create-app="true"
+      @imported="onHelmImported"
+      @close="importingHelm = false"
+    />
+  </div>
 </template>
 
 <style lang="scss" scoped>
@@ -347,6 +393,36 @@ export default {
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+      }
+
+      .helm-badge {
+        margin-left: 10px;
+        padding: 1px 8px;
+        border-radius: var(--border-radius);
+        background: var(--accent-btn);
+        color: var(--link);
+        border: 1px solid var(--link);
+        font-size: 11px;
+        line-height: 18px;
+        white-space: nowrap;
+      }
+
+      .dep-badge {
+        margin-left: 8px;
+        padding: 1px 8px;
+        border-radius: var(--border-radius);
+        background: var(--box-bg);
+        border: 1px solid var(--border);
+        color: var(--body-text);
+        font-size: 11px;
+        line-height: 18px;
+        white-space: nowrap;
+
+        &--missing {
+          background: var(--warning-badge, var(--warning-banner));
+          color: var(--on-warning-banner);
+          border-color: transparent;
+        }
       }
 
       // The same pair of tokens as the Warning state pill a few columns over: near-white on

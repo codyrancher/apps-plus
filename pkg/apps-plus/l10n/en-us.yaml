@@ -16,54 +16,6 @@ typeLabel:
     }
 
 appsPlus:
-  fields:
-    tab: Customizable
-    yamlTab: YAML
-    hint: These are the fields an installation can set. The value shown is what it starts from.
-    none: Nothing here can be changed at installation yet. Open the edit page and turn on the fields each installation should be able to set.
-    name: Parameter name
-    default: Default value
-    search: Another field
-    searchPlaceholder: Search by path or value
-    unparsed: This template is not valid YAML yet, so its fields cannot be listed.
-  pageMarks:
-    toggle: Allow editing in installation
-  form:
-    open: Edit page
-    toggleTip: Enable editing when installing the application
-    # No apostrophes anywhere in here: the banner renders its label as HTML, and one comes
-    # back through the translator as a literal &#39;.
-    hint: The edit page Rancher renders for this resource, read-only. Turn on a field to let each installation set it, and the value shown becomes the default.
-    unwired: 'The edit page for a {kind} is shown as it is. Only Deployments and ConfigMaps have their fields mapped to the template so far - use the Customizable list for this one.'
-    unknown: This template does not say what kind of resource it is, so there is no edit page for it.
-    noPage: 'Rancher has no edit page for a {kind}, so there is nothing to turn on here. The YAML tab on the card is where this file is edited.'
-    noCluster: 'The edit page for a {kind} needs a cluster to render against, and this page of Rancher has none open. Open the drawer from inside a cluster and the fields appear here.'
-    unparsed: This template is not valid YAML yet, so there is no page to render it as.
-    multiple: 'This file holds {count} resources, and an edit page shows one. Use the YAML tab, or split it into a file per resource.'
-    # A lead-in rather than a template with {error} in it: the message is put in the
-    # banner's slot, so that quotes in an apiserver error do not arrive as &#39;.
-    error: 'Rancher could not render an edit page for this resource:'
-  builder:
-    title: App builder
-    app: Building
-    appPlaceholder: Choose an app
-    newApp: Create a new app
-    inApp: Already in this app
-    newAppPlaceholder: A name for the new app
-    create: Create
-    add: Add to Application
-    pickFirst: Pick an app to collect into, or make a new one. Then use Add to Application on any resource.
-    appGone: '{app} no longer exists. Pick another app to collect into, or make a new one.'
-    clearConfirm: '{count, plural, one {Really clear 1 file?} other {Really clear # files?}}'
-    empty: Nothing collected yet. Go to any resource list, select what belongs, and use Add to Application.
-    skipped: 'Not added: {skipped}. This app already has a {kind} with that name (from {kept}), and one app cannot hold both.'
-    clear: Clear
-    saving: Saving...
-    autosaved: Changes are saved as you make them
-    save: '{count, plural, =0 {Save} one {Save 1 file} other {Save # files}}'
-    saved: '{count, plural, one {Added 1 file} other {Added # files}} to {app}.'
-    openApp: Open the app
-    dangling: 'Refers to {kind} {name}, which is not in this app. Installations will expect it to already exist.'
   import:
     title: Import a resource as a template
     hint: The resource is copied as it is now, with what the cluster wrote on it removed and its name parameterised. Nothing on the cluster is changed.
@@ -71,12 +23,38 @@ appsPlus:
     type: Resource Type
     resource: Resource
     action: Import
+  helm:
+    importButton: Import Helm Chart
+    importTitle: Import Helm Chart
+    importHint: Select a connected Rancher Helm repository or enter a Helm repository URL to import a chart as an App.
+    clusterRepo: Cluster Repository
+    repoUrl: Helm Repository URL
+    repoUrlPlaceholder: https://example.com/charts
+    loadCharts: Load Charts
+    loadingCharts: Loading...
+    chart: Chart
+    version: Version
+    appName: App Name
+    releaseName: Release Name
+    importAction: Import
+    importing: Importing...
+    clearChart: Clear Helm Chart
+    tabHint: Configure a Helm chart from a repository, or click Import Helm Chart to browse a repository index and import its default values and metadata.
+    implicitDependenciesFound: 'Implicit dependencies detected on this chart: {deps}'
+    detailBanner: 'Deploys Helm chart {chart} from {repo}'
+  dependencies:
+    hint: Add apps that must exist in Apps Plus before this app can be installed. Select an existing app from the dropdown or type a new app name to add a dependency that does not exist yet.
+    selectLabel: Dependency App
+    selectPlaceholder: Select an existing app or type a new app name
+    add: Add Dependency
+    remove: Remove
+    implicit: Implicit (from chart/annotations)
+    exists: Exists
+    notFound: Does not exist yet
+    empty: This app has no dependencies.
   values:
     unused: 'This app does not declare {key}. It is kept, but it is substituted into nothing.'
     undeclared: '{file} refers to {refs}, which {count, plural, one {is not a parameter} other {are not parameters}} of this app, and will deploy as written.'
-    # The sentence after that varies by surface: on the app's edit form the reader is already
-    # on the Default Values tab, so naming the tab they are on would read as directions to
-    # somewhere else - everywhere else has to point at that tab by name instead.
     undeclaredDeclareBelow: Declaring a value in the table below is what makes it a parameter.
     undeclaredDeclareEdit: Declare parameters by editing {app}.
     key: Value
@@ -100,7 +78,9 @@ appsPlus:
   list:
     noInstances: No installations of this app yet.
     needsAttention: '{count, plural, one {1 installation needs} other {# installations need}} values before the new template can be deployed.'
-    noApps: No apps yet. An app is a set of YAML templates; an installation is one deployment of them.
+    noApps: No apps yet. An app is a set of YAML templates or a Helm chart; an installation is one deployment of it.
+    helmBadge: 'Helm: {chart}'
+    dependsOn: 'Depends on: {deps}'
   headers:
     app: App
     clusters: Clusters
@@ -110,14 +90,15 @@ appsPlus:
     instances: Installations
   app:
     templates: Templates
+    helmChart: Helm Chart
+    dependencies: Dependencies
     provided: Provided automatically, in every template
     addTemplate: Create
     importTemplate: Import
-    collectHint: 'You do not have to start from an empty file: the App builder (the box icon in the header) collects live resources as templates - use Add to Application on any resource list.'
     fileName: File Name
     values: Default Values
     valueKeyPlaceholder: Pick a value your templates use
-    noTemplates: This app has no templates yet.
+    noTemplates: This app has no raw YAML templates.
     requiredValues: 'Every installation must supply: {keys}. Give a value a default here and installations inherit it instead.'
     clusterTemplate: Cluster Template
     clusterTemplateHint: A provisioning.cattle.io Cluster and whatever it needs, as one or more YAML documents. Rendered with the same values as the templates above and applied in order.
@@ -125,7 +106,7 @@ appsPlus:
   instance:
     destination: Where it goes
     app: App
-    appHint: The app this is an installation of. Its templates are what gets deployed.
+    appHint: The app this is an installation of. Its templates or Helm chart are what gets deployed.
     namespace: Target Namespace
     namespaceHint: Namespace the rendered resources are created in on each target cluster.
     targets: Target Clusters
@@ -142,6 +123,7 @@ appsPlus:
     bundle: Fleet Bundle
     noApp: Pick an app first.
     missingValuesSummary: 'This installation cannot be deployed until these values are supplied: {keys}. It keeps running its last deploy until then.'
+    missingDependenciesError: 'Cannot install {app}: required dependency app(s) do not exist: {deps}.'
     noTargets: No target clusters selected, so this installation deploys nowhere.
     provision: Provision a new cluster for this installation
     provisionHint: Instead of deploying to a cluster that already exists, create one and deploy to that.

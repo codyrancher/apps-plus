@@ -79,10 +79,19 @@ function k8s(path, { method = 'GET', body, contentType } = {}) {
 
 /** The Bundles one Installation deployed, which carry its name as a label. */
 async function bundlesOf(name) {
-  const selector = encodeURIComponent(`${ INSTALL_LABEL }=${ name }`);
-  const list = await k8s(`${ BUNDLES }/bundles?labelSelector=${ selector }`).catch(() => null);
+  const [byInstall, byInstance] = await Promise.all([
+    k8s(`${ BUNDLES }/bundles?labelSelector=${ encodeURIComponent(`${ INSTALL_LABEL }=${ name }`) }`).catch(() => null),
+    k8s(`${ BUNDLES }/bundles?labelSelector=${ encodeURIComponent(`appsplus.io/instance=${ name }`) }`).catch(() => null),
+  ]);
+  const map = new Map();
 
-  return list?.items || [];
+  for (const item of [...(byInstall?.items || []), ...(byInstance?.items || [])]) {
+    const key = `${ item.metadata?.namespace }/${ item.metadata?.name }`;
+
+    map.set(key, item);
+  }
+
+  return [...map.values()];
 }
 
 /**
@@ -205,6 +214,13 @@ const OPENAPI = {
         responses:   { 200: { description: 'The last tick.' } },
       },
     },
+    '/v1/helm/fetch': {
+      get: {
+        operationId: 'helmFetch',
+        summary:     'Fetch a Helm repository index.yaml or chart archive without browser CORS restrictions.',
+        responses:   { 200: { description: 'Fetched content.' } },
+      },
+    },
   },
 };
 
@@ -217,8 +233,9 @@ function send(res, status, body) {
   res.end(text);
 }
 
-http.createServer((req, res) => {
-  const path = new URL(req.url, 'http://apps-plus-api').pathname;
+http.createServer(async(req, res) => {
+  const parsed = new URL(req.url, 'http://apps-plus-api');
+  const path = parsed.pathname;
 
   if (path === '/healthz') {
     return send(res, 200, { ok: true, version: VERSION });
@@ -228,6 +245,26 @@ http.createServer((req, res) => {
   }
   if (path === '/v1/cleanup') {
     return send(res, 200, last);
+  }
+  if (path === '/v1/helm/fetch') {
+    const targetUrl = parsed.searchParams.get('url');
+
+    if (!targetUrl || !/^https?:\/\//i.test(targetUrl)) {
+      return send(res, 400, { error: 'Missing or invalid url query parameter.' });
+    }
+    try {
+      const upstream = await fetch(targetUrl);
+
+      if (!upstream.ok) {
+        return send(res, upstream.status, { error: `Upstream HTTP ${ upstream.status }` });
+      }
+      const buf = Buffer.from(await upstream.arrayBuffer());
+      const binary = parsed.searchParams.get('binary') === '1';
+
+      return send(res, 200, binary ? { base64: buf.toString('base64') } : { text: buf.toString('utf8') });
+    } catch (e) {
+      return send(res, 502, { error: e.message });
+    }
   }
 
   return send(res, 404, { error: `No route for ${ path }. GET /openapi.json is the list.` });

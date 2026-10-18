@@ -1,11 +1,24 @@
 import SteveModel from '@shell/plugins/steve/steve-class';
 import {
-  APP_INSTANCE, PRODUCT_NAME, BLANK_CLUSTER, CREATE_ROUTE, APP_QUERY, ADD_TO_APP_ACTION
+  APP, APP_INSTANCE, PRODUCT_NAME, BLANK_CLUSTER, CREATE_ROUTE, APP_QUERY,
+  DEPENDENCIES_ANNOTATION, DEPENDS_ON_ANNOTATION, DEPENDS_ON_LABEL_PREFIX
 } from '../config/types';
 
+function splitNames(raw) {
+  if (!raw || typeof raw !== 'string') {
+    return [];
+  }
+
+  return raw
+    .split(/[,;\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 /**
- * An App is the definition - a set of YAML templates and the values they render with. It
- * deploys nothing by itself; an AppInstance of it is what reaches a cluster.
+ * An App is the definition - a set of YAML templates or a Helm chart, the values it renders
+ * with, and the other Apps it depends on. It deploys nothing by itself; an AppInstance of it
+ * is what reaches a cluster.
  */
 export default class App extends SteveModel {
   /**
@@ -38,6 +51,106 @@ export default class App extends SteveModel {
     return this.templates.length;
   }
 
+  // ---------------------------------------------------------------- helm
+
+  get isHelmChart() {
+    return !!this.spec?.helm?.chart;
+  }
+
+  get helmChart() {
+    return this.spec?.helm?.chart || '';
+  }
+
+  get helmVersion() {
+    return this.spec?.helm?.version || '';
+  }
+
+  get helmRepo() {
+    return this.spec?.helm?.repo || '';
+  }
+
+  get helmDisplay() {
+    if (!this.isHelmChart) {
+      return '';
+    }
+
+    return this.helmVersion ? `${ this.helmChart } (${ this.helmVersion })` : this.helmChart;
+  }
+
+  // ---------------------------------------------------------------- dependencies
+
+  /** Dependencies stored explicitly in spec.dependencies. */
+  get explicitDependencies() {
+    const raw = this.spec?.dependencies;
+
+    if (!Array.isArray(raw)) {
+      return [];
+    }
+
+    return raw
+      .map((item) => String(item || '').trim())
+      .filter((name) => name && name !== this.metadata?.name);
+  }
+
+  /**
+   * Implicit dependencies declared via annotations or labels on the App or imported chart:
+   * - metadata.annotations['appsplus.io/dependencies'] or ['appsplus.io/depends-on']
+   * - metadata.labels['appsplus.io/dependencies'] or ['appsplus.io/depends-on']
+   * - metadata.labels['depends-on.appsplus.io/<app-name>'] = 'true'
+   */
+  get implicitDependencies() {
+    const found = new Set();
+    const annotations = this.metadata?.annotations || {};
+    const labels = this.metadata?.labels || {};
+
+    [
+      annotations[DEPENDENCIES_ANNOTATION],
+      annotations[DEPENDS_ON_ANNOTATION],
+      labels[DEPENDENCIES_ANNOTATION],
+      labels[DEPENDS_ON_ANNOTATION],
+    ].forEach((val) => {
+      splitNames(val).forEach((name) => found.add(name));
+    });
+
+    Object.entries(labels).forEach(([key, val]) => {
+      if (key.startsWith(DEPENDS_ON_LABEL_PREFIX) && val !== 'false' && val !== '0') {
+        const dep = key.slice(DEPENDS_ON_LABEL_PREFIX.length).trim();
+
+        if (dep) {
+          found.add(dep);
+        }
+      }
+    });
+
+    found.delete(this.metadata?.name);
+
+    return [...found];
+  }
+
+  /** All dependencies (explicit + implicit) of this App. */
+  get dependencies() {
+    return [...new Set([...this.explicitDependencies, ...this.implicitDependencies])];
+  }
+
+  /** Dependencies of this App that do not exist in the cluster yet. */
+  get missingDependencies() {
+    const deps = this.dependencies;
+
+    if (!deps.length) {
+      return [];
+    }
+
+    try {
+      const existing = new Set(
+        (this.$rootGetters['management/all'](APP) || []).map((app) => app.metadata?.name)
+      );
+
+      return deps.filter((dep) => !existing.has(dep));
+    } catch {
+      return [];
+    }
+  }
+
   /**
    * The instances of this app. Reads what is already in the store rather than fetching:
    * every page that shows this has loaded AppInstances itself, and a getter that fetched
@@ -52,7 +165,6 @@ export default class App extends SteveModel {
     }
   }
 
-  /** Instances that cannot be rendered against the app as it now stands. */
   /**
    * The glance line under the title. The masthead already has a place for counts like these,
    * and putting them there lines them up with the age and the labels instead of spending a row
@@ -60,11 +172,24 @@ export default class App extends SteveModel {
    */
   get details() {
     const t = this.$rootGetters['i18n/t'];
+    const items = [];
 
-    return [
-      { label: t('appsPlus.headers.templates'), content: this.templates.length },
-      { label: t('appsPlus.headers.instances'), content: this.instances.length },
-    ];
+    if (this.isHelmChart) {
+      items.push({ label: t('appsPlus.headers.chart'), content: this.helmDisplay });
+      if (this.helmRepo) {
+        items.push({ label: t('appsPlus.headers.repo'), content: this.helmRepo });
+      }
+    } else {
+      items.push({ label: t('appsPlus.headers.templates'), content: this.templates.length });
+    }
+
+    if (this.dependencies.length) {
+      items.push({ label: t('appsPlus.headers.dependencies'), content: this.dependencies.join(', ') });
+    }
+
+    items.push({ label: t('appsPlus.headers.instances'), content: this.instances.length });
+
+    return items;
   }
 
   get instancesNeedingAttention() {
@@ -128,14 +253,5 @@ export default class App extends SteveModel {
       },
       query: { [APP_QUERY]: this.metadata?.name },
     };
-  }
-
-  /**
-   * Without the builder's own "Add to Application": it is registered against every table
-   * because it belongs on every *resource*, and an App is not one - staging an App into an
-   * App is meaningless. Filtered here because registration cannot say "every type but ours".
-   */
-  get availableActions() {
-    return super.availableActions.filter((action) => action.action !== ADD_TO_APP_ACTION);
   }
 }

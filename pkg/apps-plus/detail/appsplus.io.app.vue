@@ -3,10 +3,10 @@ import ResourceTabs from '@shell/components/form/ResourceTabs';
 import Tab from '@shell/components/Tabbed/Tab';
 import { Banner } from '@components/Banner';
 import { RcButton } from '@components/RcButton';
-import { APP_INSTANCE } from '../config/types';
+import { APP, APP_INSTANCE } from '../config/types';
 import { undeclaredWarnings } from '../render';
 
-/** An app's templates, and the instances currently running them. */
+/** An app's templates (or Helm chart), dependencies, and the instances currently running them. */
 export default {
   name: 'DetailApp',
 
@@ -22,7 +22,10 @@ export default {
   },
 
   async fetch() {
-    await this.$store.dispatch('management/findAll', { type: APP_INSTANCE });
+    await Promise.all([
+      this.$store.dispatch('management/findAll', { type: APP }),
+      this.$store.dispatch('management/findAll', { type: APP_INSTANCE }),
+    ]);
   },
 
   computed: {
@@ -34,11 +37,14 @@ export default {
       return this.value.instances || [];
     },
 
-    /**
-     * What an installation of this app gets to set, with the app's answer to each. This is the
-     * question anybody deciding whether to install it is asking, and until it was here the only
-     * way to answer it was to read the templates for `${...}`.
-     */
+    dependencies() {
+      return this.value.dependencies || [];
+    },
+
+    missingDependencies() {
+      return new Set(this.value.missingDependencies || []);
+    },
+
     valueRows() {
       const values = this.value.spec?.values || {};
 
@@ -48,13 +54,6 @@ export default {
       }));
     },
 
-    /**
-     * Templates using `${...}` this app never declared, shaped for the banner.
-     *
-     * The other half of the declared model: without it, an app authored by hand shows "declares
-     * no values" here while its rendered YAML says `${maxmemory}` - the same app describing
-     * itself two different ways one tab apart.
-     */
     undeclared() {
       return undeclaredWarnings(this.value);
     },
@@ -67,7 +66,7 @@ export default {
     <rc-button
       variant="secondary"
       class="mb-20"
-      :to="value.createInstanceLocation"
+      @click="$router.push(value.createInstanceLocation)"
     >
       {{ t('appsPlus.action.createInstance') }}
     </rc-button>
@@ -78,6 +77,11 @@ export default {
         :label="t('appsPlus.app.templates')"
         :weight="10"
       >
+        <Banner
+          v-if="value.isHelmChart"
+          color="info"
+          :label="t('appsPlus.helm.detailBanner', { chart: value.helmDisplay, repo: value.helmRepo || '—' })"
+        />
         <div
           v-for="file in templates"
           :key="file.name"
@@ -89,7 +93,7 @@ export default {
           <pre class="rendered__body">{{ file.content }}</pre>
         </div>
         <Banner
-          v-if="!templates.length"
+          v-if="!templates.length && !value.isHelmChart"
           color="warning"
           :label="t('appsPlus.app.noTemplates')"
         />
@@ -139,13 +143,39 @@ export default {
             </tr>
           </tbody>
         </table>
-        <!-- Only when the templates truly answer for themselves: with an undeclared `${...}`
-             on the books, "declares no values" would be this page contradicting its own
-             warning. -->
         <Banner
           v-else-if="!undeclared.length"
           color="info"
           :label="t('appsPlus.values.none')"
+        />
+      </Tab>
+
+      <Tab
+        name="dependencies"
+        :label="t('appsPlus.app.dependencies')"
+        :weight="9.2"
+        :error="missingDependencies.size > 0"
+      >
+        <ul
+          v-if="dependencies.length"
+          class="instance-list"
+        >
+          <li
+            v-for="dep in dependencies"
+            :key="dep"
+          >
+            <code>{{ dep }}</code>
+            <span
+              class="ml-10 text-muted"
+            >
+              {{ missingDependencies.has(dep) ? t('appsPlus.dependencies.notFound') : t('appsPlus.dependencies.exists') }}
+            </span>
+          </li>
+        </ul>
+        <Banner
+          v-else
+          color="info"
+          :label="t('appsPlus.dependencies.empty')"
         />
       </Tab>
 
