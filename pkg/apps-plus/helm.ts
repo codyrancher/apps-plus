@@ -6,8 +6,13 @@ import {
   parseDependencyList,
 } from './config/types';
 import { flattenValues } from './render';
+import { serviceUrl } from './service';
 
-const PROXY_BASE = '/k8s/clusters/local/api/v1/namespaces/extension-studio/services/http:apps-plus-api:80/proxy';
+const PROXY_BASES = [
+  serviceUrl('apps-plus'),
+  serviceUrl('extension-studio'),
+  '/k8s/clusters/local/api/v1/namespaces/extension-studio/services/http:apps-plus-api:80/proxy',
+];
 
 export interface HelmChartVersion {
   version: string;
@@ -40,14 +45,23 @@ async function fetchRemote(url: string, binary = false): Promise<any> {
     // Fall back to apps-plus-api proxy below.
   }
 
-  const proxyUrl = `${ PROXY_BASE }/v1/helm/fetch?url=${ encodeURIComponent(url) }${ binary ? '&encoding=base64' : '' }`;
-  const res = await fetch(proxyUrl, {
-    headers:     { accept: 'application/json' },
-    credentials: 'same-origin',
-  });
+  let res: Response | null = null;
 
-  if (!res.ok) {
-    throw new Error(`Could not fetch ${ url } (${ res.status })`);
+  for (const base of PROXY_BASES) {
+    const proxyUrl = `${ base }/v1/helm/fetch?url=${ encodeURIComponent(url) }${ binary ? '&encoding=base64' : '' }`;
+    const candidate = await fetch(proxyUrl, {
+      headers:     { accept: 'application/json' },
+      credentials: 'same-origin',
+    }).catch(() => null);
+
+    if (candidate?.ok) {
+      res = candidate;
+      break;
+    }
+  }
+
+  if (!res || !res.ok) {
+    throw new Error(`Could not fetch ${ url }`);
   }
 
   const payload = await res.json();
