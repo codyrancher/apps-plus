@@ -92,7 +92,6 @@ appsPlus:
     dependencyBadge: Dependency
     dependencyInstanceHint: Installed as a dependency of another app. Click to view dependent installations.
     needsAttention: '{count, plural, one {1 installation needs} other {# installations need}} values before the new template can be deployed.'
-    helmBadge: 'Helm: {chart}'
     dependsOn: 'Depends on: {deps}'
   headers:
     app: App

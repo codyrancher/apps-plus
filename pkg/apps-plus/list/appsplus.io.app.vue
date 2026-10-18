@@ -257,13 +257,13 @@ export default {
               </router-link>
               <span v-else>{{ appFor(group.group)?.nameDisplay }}</span>
 
-              <span
+              <i
                 v-if="appFor(group.group)?.isHelmChart"
-                class="helm-badge"
-                :title="appFor(group.group).helmRepo ? `${appFor(group.group).helmDisplay} — ${appFor(group.group).helmRepo}` : appFor(group.group).helmDisplay"
-              >
-                {{ t('appsPlus.list.helmBadge', { chart: appFor(group.group).helmDisplay }) }}
-              </span>
+                v-clean-tooltip="appFor(group.group).helmRepo ? `${appFor(group.group).helmDisplay} — ${appFor(group.group).helmRepo}` : appFor(group.group).helmDisplay"
+                class="icon icon-helm helm-icon"
+                data-testid="helm-chart-icon"
+                :aria-label="appFor(group.group).helmDisplay"
+              />
 
               <span
                 v-if="attentionCount(group.group)"
@@ -407,16 +407,11 @@ export default {
         text-overflow: ellipsis;
       }
 
-      .helm-badge {
-        margin-left: 10px;
-        padding: 1px 8px;
-        border-radius: var(--border-radius);
-        background: var(--accent-btn);
+      .helm-icon {
+        margin-left: 8px;
         color: var(--link);
-        border: 1px solid var(--link);
-        font-size: 11px;
-        line-height: 18px;
-        white-space: nowrap;
+        font-size: 16px;
+        line-height: 1;
       }
 
       .attention {
