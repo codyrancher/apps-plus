@@ -174,14 +174,15 @@ export default {
     },
 
     relatedRows() {
+      const t = this.t.bind(this);
       const rows = [];
       const app = this.value.app;
 
       if (app) {
-        rows.push(appStorageRelatedRow(app, this.t, 'app-source'));
+        rows.push(appStorageRelatedRow(app, t, 'app-source'));
       }
 
-      rows.push(...crdRelatedRows(this.t));
+      rows.push(...crdRelatedRows(t));
 
       (app?.dependencies || []).forEach((dep) => {
         const depInst = this.instances.find((inst) => inst.spec?.app === dep && !inst.isTerminating);
@@ -196,18 +197,18 @@ export default {
             name:       depInst.nameDisplay,
             namespace:  depInst.targetNamespace || '—',
             to:         depInst.detailLocation,
-            role:       this.t('appsPlus.related.dependencyInstanceRole', { app: dep }),
+            role:       t('appsPlus.related.dependencyInstanceRole', { app: dep }),
           });
         } else {
           rows.push({
             key:        `dep-app-${ dep }`,
             stateColor: depApp ? 'bg-warning' : 'bg-error',
-            stateLabel: depApp ? this.t('appsPlus.dependencies.notInstalled') : this.t('appsPlus.dependencies.missing'),
+            stateLabel: depApp ? t('appsPlus.dependencies.notInstalled') : t('appsPlus.dependencies.missing'),
             kind:       'App (Dependency)',
             name:       dep,
             namespace:  '—',
             to:         depApp?.detailLocation || null,
-            role:       this.t('appsPlus.related.dependencyAppRole'),
+            role:       t('appsPlus.related.dependencyAppRole'),
           });
         }
       });
@@ -221,11 +222,11 @@ export default {
           name:       reqInst.nameDisplay,
           namespace:  reqInst.targetNamespace || '—',
           to:         reqInst.detailLocation,
-          role:       this.t('appsPlus.related.dependentInstanceRole', { app: reqInst.appDisplay }),
+          role:       t('appsPlus.related.dependentInstanceRole', { app: reqInst.appDisplay }),
         });
       });
 
-      rows.push(...bundleRelatedRows(this.value, this.t));
+      rows.push(...bundleRelatedRows(this.value, t));
 
       (this.value.bundleDeployments || []).forEach((bd) => {
         rows.push({
@@ -236,7 +237,7 @@ export default {
           name:       bd.metadata?.name,
           namespace:  bd.metadata?.namespace || '—',
           to:         null,
-          role:       this.t('appsPlus.related.bundleDeploymentRole'),
+          role:       t('appsPlus.related.bundleDeploymentRole'),
         });
       });
 
@@ -249,7 +250,7 @@ export default {
           name:       deployed.name,
           namespace:  deployed.namespace || '—',
           to:         deployed.to,
-          role:       this.t('appsPlus.related.deployedResourceRole', { cluster: deployed.clusterName }),
+          role:       t('appsPlus.related.deployedResourceRole', { cluster: deployed.clusterName }),
         });
       });
 

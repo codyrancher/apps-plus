@@ -79,9 +79,10 @@ export default {
     },
 
     relatedRows() {
+      const t = this.t.bind(this);
       const rows = [
-        ...crdRelatedRows(this.t),
-        appStorageRelatedRow(this.value, this.t),
+        ...crdRelatedRows(t),
+        appStorageRelatedRow(this.value, t),
       ];
 
       this.dependencies.forEach((dep) => {
@@ -91,12 +92,12 @@ export default {
         rows.push({
           key:        `dep-app-${ dep }`,
           stateColor: missing ? 'bg-error' : 'bg-success',
-          stateLabel: missing ? this.t('appsPlus.dependencies.missing') : 'Active',
+          stateLabel: missing ? t('appsPlus.dependencies.missing') : 'Active',
           kind:       'App (Dependency)',
           name:       dep,
           namespace:  '—',
           to:         depApp?.detailLocation || null,
-          role:       this.t('appsPlus.related.dependencyAppRole'),
+          role:       t('appsPlus.related.dependencyAppRole'),
         });
       });
 
@@ -110,7 +111,7 @@ export default {
             name:       other.nameDisplay,
             namespace:  '—',
             to:         other.detailLocation,
-            role:       this.t('appsPlus.related.dependentAppRole', { app: this.value.nameDisplay }),
+            role:       t('appsPlus.related.dependentAppRole', { app: this.value.nameDisplay }),
           });
         }
       });
@@ -125,9 +126,9 @@ export default {
             name:       inst.nameDisplay,
             namespace:  inst.targetNamespace || '—',
             to:         inst.detailLocation,
-            role:       this.t('appsPlus.related.instanceRole', { targets: inst.targetDisplay }),
+            role:       t('appsPlus.related.instanceRole', { targets: inst.targetDisplay }),
           },
-          ...bundleRelatedRows(inst, this.t),
+          ...bundleRelatedRows(inst, t),
         );
       });
 
