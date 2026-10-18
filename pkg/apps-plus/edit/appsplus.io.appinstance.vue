@@ -8,13 +8,14 @@ import Tabbed from '@shell/components/Tabbed';
 import Tab from '@shell/components/Tabbed/Tab';
 import { Banner } from '@components/Banner';
 import { Checkbox } from '@components/Form/Checkbox';
+import RenderedYamlFiles from '../components/RenderedYamlFiles.vue';
 import {
   APP, APP_INSTANCE, FLEET_CLUSTER, APP_QUERY, DEFAULT_TARGET_NAMESPACE
 } from '../config/types';
 import { NAMESPACE } from '@shell/config/types';
 import { DEFAULT_CLUSTER_VALUES } from '../config/cluster-template';
 import {
-  renderTemplates, missingValues, appVariables, undeclaredWarnings, isSet, BUILT_IN_VALUES
+  renderTemplates, missingValues, appVariables, undeclaredWarnings, isSet, typedOverrides, BUILT_IN_VALUES
 } from '../render';
 import { fetchHelmVersionDetails } from '../helm';
 
@@ -31,6 +32,7 @@ export default {
     Tab,
     Banner,
     Checkbox,
+    RenderedYamlFiles,
   },
 
   mixins: [CreateEditView],
@@ -168,12 +170,28 @@ export default {
       },
     },
 
-    preview() {
+    previewFiles() {
       if (!this.selectedApp) {
         return [];
       }
 
-      return renderTemplates(this.selectedApp, this.value);
+      const files = [...renderTemplates(this.selectedApp, this.value)];
+
+      if (this.helmPreview) {
+        files.unshift({
+          name:    this.selectedApp.helmDisplay,
+          content: this.helmPreview,
+        });
+      }
+
+      return files;
+    },
+
+    clusterPreviewFiles() {
+      return [{
+        name:    this.clusterName || this.value.metadata?.name || '',
+        content: this.value.renderedClusterTemplate,
+      }];
     },
 
     helmPreview() {
@@ -189,7 +207,7 @@ export default {
         chart:       helm.chart || '',
         version:     this.value.spec.version || helm.version || '',
         releaseName: helm.releaseName || this.value.metadata?.name || helm.chart || '',
-        values:      { ...baseValues, ...(this.values || {}) },
+        values:      { ...baseValues, ...typedOverrides(baseValues, this.values) },
       }, null, 2);
     },
 
@@ -259,13 +277,7 @@ export default {
     },
 
     async loadVersionDefaults(ver) {
-      if (!this.selectedApp?.isHelmChart || !ver) {
-        this.versionDefaults = null;
-
-        return;
-      }
-
-      if (ver === this.selectedApp.helmVersion) {
+      if (!this.selectedApp?.isHelmChart || !ver || ver === this.selectedApp.helmVersion) {
         this.versionDefaults = null;
 
         return;
@@ -444,7 +456,7 @@ export default {
           >
             {{ t('appsPlus.values.undeclared', reference) }}
             <router-link
-              v-if="selectedApp.editLocation"
+              v-if="selectedApp.canCustomEdit"
               :to="selectedApp.editLocation"
             >
               {{ t('appsPlus.values.undeclaredDeclareEdit', { app: selectedApp.nameDisplay }) }}
@@ -496,12 +508,7 @@ export default {
           color="info"
           :label="t('appsPlus.instance.clusterPreviewHint')"
         />
-        <div class="rendered">
-          <div class="rendered__name">
-            {{ clusterName || value.metadata.name }}
-          </div>
-          <pre class="rendered__body">{{ value.renderedClusterTemplate }}</pre>
-        </div>
+        <RenderedYamlFiles :files="clusterPreviewFiles" />
       </Tab>
 
       <Tab
@@ -518,25 +525,7 @@ export default {
           color="warning"
           :label="t('appsPlus.instance.noApp')"
         />
-        <div
-          v-if="helmPreview"
-          class="rendered"
-        >
-          <div class="rendered__name">
-            {{ selectedApp.helmDisplay }}
-          </div>
-          <pre class="rendered__body">{{ helmPreview }}</pre>
-        </div>
-        <div
-          v-for="file in preview"
-          :key="file.name"
-          class="rendered"
-        >
-          <div class="rendered__name">
-            {{ file.name }}
-          </div>
-          <pre class="rendered__body">{{ file.content }}</pre>
-        </div>
+        <RenderedYamlFiles :files="previewFiles" />
       </Tab>
     </Tabbed>
   </CruResource>
@@ -576,27 +565,5 @@ export default {
   }
 
   &__note--warning { color: var(--warning); }
-}
-
-.rendered {
-  margin-bottom: 16px;
-
-  &__name {
-    font-family: monospace;
-    font-size: 12px;
-    padding: 6px 10px;
-    background: var(--nav-bg);
-    border: 1px solid var(--border);
-    border-bottom: none;
-    border-radius: var(--border-radius) var(--border-radius) 0 0;
-  }
-
-  &__body {
-    margin: 0;
-    padding: 10px;
-    border: 1px solid var(--border);
-    border-radius: 0 0 var(--border-radius) var(--border-radius);
-    overflow-x: auto;
-  }
 }
 </style>

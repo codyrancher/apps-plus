@@ -32,6 +32,10 @@ export interface HelmChartDetails {
   files: Array<{ name: string; content: string }>;
 }
 
+export function normalizeHelmRepoUrl(url?: string): string {
+  return (url || '').trim().replace(/\/+$/, '').replace(/\/index\.yaml$/, '');
+}
+
 async function fetchRemote(url: string, binary = false): Promise<any> {
   try {
     const res = await fetch(url);
@@ -104,13 +108,13 @@ export function parseHelmIndex(raw: any): HelmChartEntry[] {
 }
 
 export async function fetchHelmRepoIndex(opts: { repoUrl?: string }): Promise<HelmChartEntry[]> {
-  if (!opts.repoUrl) {
+  const base = normalizeHelmRepoUrl(opts.repoUrl);
+
+  if (!base) {
     throw new Error('Specify a Helm repository URL.');
   }
 
-  const trimmed = opts.repoUrl.trim().replace(/\/+$/, '');
-  const indexUrl = trimmed.endsWith('/index.yaml') ? trimmed : `${ trimmed }/index.yaml`;
-  const yamlText = await fetchRemote(indexUrl, false);
+  const yamlText = await fetchRemote(`${ base }/index.yaml`, false);
 
   return parseHelmIndex(yamlText);
 }
@@ -199,7 +203,7 @@ export async function fetchHelmChartDetails(opts: {
   let valuesObj: Record<string, any> = {};
   let files: Array<{ name: string; content: string }> = [];
 
-  const base = (opts.repoUrl || '').trim().replace(/\/+$/, '').replace(/\/index\.yaml$/, '');
+  const base = normalizeHelmRepoUrl(opts.repoUrl);
   const rawUrl = opts.versionEntry?.urls?.[0] || (base ? `${ base }/${ opts.chartName }-${ opts.versionEntry.version }.tgz` : '');
 
   if (rawUrl) {
@@ -243,13 +247,14 @@ export async function fetchHelmChartDetails(opts: {
 }
 
 export async function fetchHelmVersionDetails(repoUrl: string, chartName: string, version: string): Promise<HelmChartDetails> {
+  const base = normalizeHelmRepoUrl(repoUrl);
   let versionEntry: HelmChartVersion = {
     version,
-    urls: [`${ repoUrl.trim().replace(/\/+$/, '') }/${ chartName }-${ version }.tgz`],
+    urls: base ? [`${ base }/${ chartName }-${ version }.tgz`] : [],
   };
 
   try {
-    const charts = await fetchHelmRepoIndex({ repoUrl });
+    const charts = await fetchHelmRepoIndex({ repoUrl: base });
     const chart = charts.find((c) => c.name === chartName);
     const matched = chart?.versions.find((v) => v.version === version);
 
@@ -259,7 +264,7 @@ export async function fetchHelmVersionDetails(repoUrl: string, chartName: string
   } catch {}
 
   return fetchHelmChartDetails({
-    repoUrl,
+    repoUrl: base,
     chartName,
     versionEntry,
   });

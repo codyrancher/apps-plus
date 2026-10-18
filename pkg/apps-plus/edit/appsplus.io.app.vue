@@ -85,7 +85,7 @@ export default {
     },
 
     explicitDependencies() {
-      return Array.isArray(this.value.spec?.dependencies) ? this.value.spec.dependencies : [];
+      return this.value.explicitDependencies || [];
     },
 
     implicitDependencies() {
@@ -175,7 +175,7 @@ export default {
       const raw = typeof this.newDependency === 'object' ? this.newDependency?.value || this.newDependency?.label : this.newDependency;
       const name = String(raw || '').trim();
 
-      if (!name) {
+      if (!name || name === this.value.metadata?.name) {
         return;
       }
 

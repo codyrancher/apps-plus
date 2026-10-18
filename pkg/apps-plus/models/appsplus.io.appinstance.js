@@ -428,15 +428,23 @@ export default class AppInstance extends SteveModel {
     }
   }
 
+  showBlockedDeleteModal() {
+    if (!this.dependentInstances.length) {
+      return false;
+    }
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('appsplus:blocked-delete', { detail: { instance: this } }));
+    }
+
+    return true;
+  }
+
   promptRemove(resources = this) {
     const list = Array.isArray(resources) ? resources : [resources];
-    const blocked = list.find((item) => item?.dependentInstances?.length > 0);
+    const blocked = list.find((item) => item?.showBlockedDeleteModal?.());
 
     if (blocked) {
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('appsplus:blocked-delete', { detail: { instance: blocked } }));
-      }
-
       return;
     }
 
@@ -894,7 +902,10 @@ export default class AppInstance extends SteveModel {
         } catch {}
       }
 
-      const merged = typedOverrides({ ...baseValues, ...(this.spec?.values || {}) }, baseValues);
+      const merged = {
+        ...baseValues,
+        ...typedOverrides(baseValues, this.spec?.values),
+      };
       const hasChartYaml = chartFiles.some((f) => f?.name === 'Chart.yaml');
 
       if (hasChartYaml) {

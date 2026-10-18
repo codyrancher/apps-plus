@@ -168,3 +168,35 @@ export function crdRelatedRows(t: (key: string) => string) {
     },
   ];
 }
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function appStorageRelatedRow(app: any, t: (key: string, args?: any) => string, keyPrefix = 'app-storage') {
+  return {
+    key:        `${ keyPrefix }-${ app.metadata?.name }`,
+    stateColor: 'bg-success',
+    stateLabel: 'Stored',
+    kind:       'App (Template Storage)',
+    name:       app.nameDisplay,
+    namespace:  '—',
+    to:         app.detailLocation,
+    role:       t('appsPlus.related.appStorageRole', {
+      templates: (app.templates || []).length,
+      values:    Object.keys(app.spec?.values || {}).length,
+    }),
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function bundleRelatedRows(instance: any, t: (key: string, args?: any) => string) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (instance?.bundles || []).map((bundle: any) => ({
+    key:        `bundle-${ bundle.metadata?.namespace }-${ bundle.metadata?.name }`,
+    stateColor: 'bg-success',
+    stateLabel: `${ instance.readyDisplay } Ready`,
+    kind:       'Fleet Bundle',
+    name:       bundle.metadata?.name,
+    namespace:  bundle.metadata?.namespace || '—',
+    to:         bundle.detailLocation,
+    role:       t('appsPlus.related.bundleRole', { instance: instance.nameDisplay }),
+  }));
+}

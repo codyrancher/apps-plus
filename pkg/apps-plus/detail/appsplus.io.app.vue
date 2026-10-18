@@ -1,12 +1,14 @@
 <script>
 import ResourceTabs from '@shell/components/form/ResourceTabs';
-import SortableTable from '@shell/components/SortableTable';
 import Tab from '@shell/components/Tabbed/Tab';
 import { Banner } from '@components/Banner';
 import { RcButton } from '@components/RcButton';
-import { BadgeState } from '@components/BadgeState';
+import RelatedResourcesTable from '../components/RelatedResourcesTable.vue';
+import ValuesSummaryTable from '../components/ValuesSummaryTable.vue';
+import RenderedYamlFiles from '../components/RenderedYamlFiles.vue';
 import {
-  APP, APP_INSTANCE, FLEET_BUNDLE, RELATED_HEADERS, crdRelatedRows
+  APP, APP_INSTANCE, FLEET_BUNDLE,
+  crdRelatedRows, appStorageRelatedRow, bundleRelatedRows
 } from '../config/types';
 import { undeclaredWarnings } from '../render';
 
@@ -15,11 +17,12 @@ export default {
 
   components: {
     ResourceTabs,
-    SortableTable,
     Tab,
     Banner,
     RcButton,
-    BadgeState,
+    RelatedResourcesTable,
+    ValuesSummaryTable,
+    RenderedYamlFiles,
   },
 
   props: {
@@ -75,26 +78,11 @@ export default {
       return undeclaredWarnings(this.value);
     },
 
-    relatedHeaders() {
-      return RELATED_HEADERS;
-    },
-
     relatedRows() {
-      const rows = [...crdRelatedRows(this.t)];
-
-      rows.push({
-        key:        `app-storage-${ this.value.metadata?.name }`,
-        stateColor: 'bg-success',
-        stateLabel: 'Stored',
-        kind:       'App (Template Storage)',
-        name:       this.value.nameDisplay,
-        namespace:  '—',
-        to:         this.value.detailLocation,
-        role:       this.t('appsPlus.related.appStorageRole', {
-          templates: this.templates.length,
-          values:    Object.keys(this.value.spec?.values || {}).length,
-        }),
-      });
+      const rows = [
+        ...crdRelatedRows(this.t),
+        appStorageRelatedRow(this.value, this.t),
+      ];
 
       this.dependencies.forEach((dep) => {
         const depApp = this.appsByName[dep];
@@ -128,29 +116,19 @@ export default {
       });
 
       this.instances.forEach((inst) => {
-        rows.push({
-          key:        `inst-${ inst.metadata?.name }`,
-          stateColor: inst.state === 'active' ? 'bg-success' : 'bg-warning',
-          stateLabel: inst.stateDisplay || inst.state,
-          kind:       'AppInstance',
-          name:       inst.nameDisplay,
-          namespace:  inst.targetNamespace || '—',
-          to:         inst.detailLocation,
-          role:       this.t('appsPlus.related.instanceRole', { targets: inst.targetDisplay }),
-        });
-
-        (inst.bundles || []).forEach((bundle) => {
-          rows.push({
-            key:        `bundle-${ bundle.metadata?.namespace }-${ bundle.metadata?.name }`,
-            stateColor: 'bg-success',
-            stateLabel: `${ inst.readyDisplay } Ready`,
-            kind:       'Fleet Bundle',
-            name:       bundle.metadata?.name,
-            namespace:  bundle.metadata?.namespace || '—',
-            to:         bundle.detailLocation,
-            role:       this.t('appsPlus.related.bundleRole', { instance: inst.nameDisplay }),
-          });
-        });
+        rows.push(
+          {
+            key:        `inst-${ inst.metadata?.name }`,
+            stateColor: inst.state === 'active' ? 'bg-success' : 'bg-warning',
+            stateLabel: inst.stateDisplay || inst.state,
+            kind:       'AppInstance',
+            name:       inst.nameDisplay,
+            namespace:  inst.targetNamespace || '—',
+            to:         inst.detailLocation,
+            role:       this.t('appsPlus.related.instanceRole', { targets: inst.targetDisplay }),
+          },
+          ...bundleRelatedRows(inst, this.t),
+        );
       });
 
       return rows;
@@ -184,16 +162,7 @@ export default {
           color="info"
           :label="t('appsPlus.helm.detailBanner', { chart: value.helmDisplay, repo: value.helmRepo || '—' })"
         />
-        <div
-          v-for="file in templates"
-          :key="file.name"
-          class="rendered"
-        >
-          <div class="rendered__name">
-            {{ file.name }}
-          </div>
-          <pre class="rendered__body">{{ file.content }}</pre>
-        </div>
+        <RenderedYamlFiles :files="templates" />
         <Banner
           v-if="!templates.length && !value.isHelmChart"
           color="warning"
@@ -207,51 +176,10 @@ export default {
         :weight="9.5"
         :error="!!undeclared.length"
       >
-        <Banner
-          v-for="reference in undeclared"
-          :key="reference.file"
-          color="warning"
-        >
-          {{ t('appsPlus.values.undeclared', reference) }}
-          <router-link
-            v-if="value.canCustomEdit"
-            :to="value.editLocation"
-          >
-            {{ t('appsPlus.values.undeclaredDeclareEdit', { app: value.nameDisplay }) }}
-          </router-link>
-        </Banner>
-        <table
-          v-if="valueRows.length"
-          class="values-table"
-        >
-          <thead>
-            <tr>
-              <th>{{ t('appsPlus.values.key') }}</th>
-              <th>{{ t('appsPlus.values.default') }}</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="row in valueRows"
-              :key="row.name"
-            >
-              <td>
-                <code>{{ row.name }}</code>
-              </td>
-              <td>
-                <span v-if="String(row.default ?? '').trim() !== ''">{{ row.default }}</span>
-                <span
-                  v-else
-                  class="text-muted"
-                >{{ t('appsPlus.instance.valueNoDefault') }}</span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        <Banner
-          v-else-if="!undeclared.length"
-          color="info"
-          :label="t('appsPlus.values.none')"
+        <ValuesSummaryTable
+          :app="value"
+          :rows="valueRows"
+          :undeclared="undeclared"
         />
       </Tab>
 
@@ -316,63 +244,16 @@ export default {
         :label="t('appsPlus.related.tabLabel')"
         :weight="8"
       >
-        <Banner
-          color="info"
-          :label="t('appsPlus.related.appHint')"
-        />
-        <SortableTable
+        <RelatedResourcesTable
           :rows="relatedRows"
-          :headers="relatedHeaders"
-          key-field="key"
-          :table-actions="false"
-          :row-actions="false"
-          :search="false"
-          data-testid="related-resources-table"
-        >
-          <template #cell:state="{row}">
-            <BadgeState
-              :color="row.stateColor"
-              :label="row.stateLabel"
-            />
-          </template>
-          <template #cell:name="{row}">
-            <router-link
-              v-if="row.to"
-              :to="row.to"
-            >
-              {{ row.name }}
-            </router-link>
-            <span v-else>{{ row.name }}</span>
-          </template>
-        </SortableTable>
+          :hint="t('appsPlus.related.appHint')"
+        />
       </Tab>
     </ResourceTabs>
   </div>
 </template>
 
 <style lang="scss" scoped>
-.rendered {
-  margin-bottom: 16px;
-
-  &__name {
-    font-family: monospace;
-    font-size: 12px;
-    padding: 6px 10px;
-    background: var(--nav-bg);
-    border: 1px solid var(--border);
-    border-bottom: none;
-    border-radius: var(--border-radius) var(--border-radius) 0 0;
-  }
-
-  &__body {
-    margin: 0;
-    padding: 10px;
-    border: 1px solid var(--border);
-    border-radius: 0 0 var(--border-radius) var(--border-radius);
-    overflow-x: auto;
-  }
-}
-
 .instance-list {
   list-style: none;
   margin: 0;
@@ -381,26 +262,6 @@ export default {
   li {
     padding: 6px 0;
     border-bottom: 1px solid var(--border);
-  }
-}
-
-.values-table {
-  border-collapse: collapse;
-  min-width: 50%;
-
-  th {
-    text-align: left;
-    font-weight: 600;
-    font-size: 12px;
-    color: var(--muted);
-    padding: 6px 24px 6px 0;
-    border-bottom: 1px solid var(--border);
-  }
-
-  td {
-    padding: 8px 24px 8px 0;
-    border-bottom: 1px solid var(--border);
-    vertical-align: top;
   }
 }
 </style>

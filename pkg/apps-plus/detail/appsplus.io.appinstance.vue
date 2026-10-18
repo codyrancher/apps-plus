@@ -3,11 +3,13 @@ import ResourceTabs from '@shell/components/form/ResourceTabs';
 import SortableTable from '@shell/components/SortableTable';
 import Tab from '@shell/components/Tabbed/Tab';
 import { Banner } from '@components/Banner';
-import { BadgeState } from '@components/BadgeState';
 import BlockedDeleteModal from '../components/BlockedDeleteModal.vue';
+import RelatedResourcesTable from '../components/RelatedResourcesTable.vue';
+import ValuesSummaryTable from '../components/ValuesSummaryTable.vue';
+import RenderedYamlFiles from '../components/RenderedYamlFiles.vue';
 import {
   FLEET_BUNDLE, FLEET_BUNDLE_DEPLOYMENT, APP, APP_INSTANCE, PROVISIONING_CLUSTER, REGISTRATION_TOKEN,
-  RELATED_HEADERS, crdRelatedRows, steveType
+  crdRelatedRows, appStorageRelatedRow, bundleRelatedRows, steveType
 } from '../config/types';
 import { undeclaredWarnings } from '../render';
 
@@ -19,8 +21,10 @@ export default {
     Tab,
     Banner,
     SortableTable,
-    BadgeState,
     BlockedDeleteModal,
+    RelatedResourcesTable,
+    ValuesSummaryTable,
+    RenderedYamlFiles,
   },
 
   props: {
@@ -31,10 +35,7 @@ export default {
   },
 
   data() {
-    return {
-      registrationToken:     null,
-      blockedDeleteInstance: null,
-    };
+    return { registrationToken: null };
   },
 
   async fetch() {
@@ -58,18 +59,6 @@ export default {
     }
   },
 
-  mounted() {
-    if (typeof window !== 'undefined') {
-      window.addEventListener('appsplus:blocked-delete', this.onBlockedDelete);
-    }
-  },
-
-  beforeUnmount() {
-    if (typeof window !== 'undefined') {
-      window.removeEventListener('appsplus:blocked-delete', this.onBlockedDelete);
-    }
-  },
-
   computed: {
     apps() {
       return this.$store.getters['management/all'](APP) || [];
@@ -85,6 +74,13 @@ export default {
 
     resources() {
       return this.value.renderedResources || [];
+    },
+
+    clusterFiles() {
+      return [{
+        name:    this.value.clusterName,
+        content: this.value.renderedClusterTemplate,
+      }];
     },
 
     valueRows() {
@@ -177,28 +173,12 @@ export default {
       });
     },
 
-    relatedHeaders() {
-      return RELATED_HEADERS;
-    },
-
     relatedRows() {
       const rows = [];
       const app = this.value.app;
 
       if (app) {
-        rows.push({
-          key:        `app-source-${ app.metadata?.name }`,
-          stateColor: 'bg-success',
-          stateLabel: 'Stored',
-          kind:       'App (Template Storage)',
-          name:       app.nameDisplay,
-          namespace:  '—',
-          to:         app.detailLocation,
-          role:       this.t('appsPlus.related.appStorageRole', {
-            templates: (app.templates || []).length,
-            values:    Object.keys(app.spec?.values || {}).length,
-          }),
-        });
+        rows.push(appStorageRelatedRow(app, this.t, 'app-source'));
       }
 
       rows.push(...crdRelatedRows(this.t));
@@ -245,18 +225,7 @@ export default {
         });
       });
 
-      (this.value.bundles || []).forEach((bundle) => {
-        rows.push({
-          key:        `bundle-${ bundle.metadata?.namespace }-${ bundle.metadata?.name }`,
-          stateColor: 'bg-success',
-          stateLabel: `${ this.value.readyDisplay } Ready`,
-          kind:       'Fleet Bundle',
-          name:       bundle.metadata?.name,
-          namespace:  bundle.metadata?.namespace || '—',
-          to:         bundle.detailLocation,
-          role:       this.t('appsPlus.related.bundleRole', { instance: this.value.nameDisplay }),
-        });
-      });
+      rows.push(...bundleRelatedRows(this.value, this.t));
 
       (this.value.bundleDeployments || []).forEach((bd) => {
         rows.push({
@@ -293,16 +262,6 @@ export default {
 
     nodeCommand() {
       return this.registrationToken?.status?.nodeCommand || null;
-    },
-  },
-
-  methods: {
-    onBlockedDelete(event) {
-      const instance = event?.detail?.instance;
-
-      if (instance) {
-        this.blockedDeleteInstance = instance;
-      }
     },
   },
 };
@@ -367,7 +326,7 @@ export default {
         <p class="text-muted">
           {{ t('appsPlus.instance.registrationHint') }}
         </p>
-        <pre class="rendered__body">{{ nodeCommand }}</pre>
+        <pre class="cluster-panel__cmd">{{ nodeCommand }}</pre>
       </template>
     </div>
 
@@ -382,12 +341,7 @@ export default {
         :label="t('appsPlus.instance.clusterPreview')"
         :weight="11"
       >
-        <div class="rendered">
-          <div class="rendered__name">
-            {{ value.clusterName }}
-          </div>
-          <pre class="rendered__body">{{ value.renderedClusterTemplate }}</pre>
-        </div>
+        <RenderedYamlFiles :files="clusterFiles" />
       </Tab>
 
       <Tab
@@ -458,59 +412,11 @@ export default {
         :weight="10.5"
         :error="!!undeclared.length"
       >
-        <Banner
-          v-for="reference in undeclared"
-          :key="reference.file"
-          color="warning"
-        >
-          {{ t('appsPlus.values.undeclared', reference) }}
-          <router-link
-            v-if="value.app?.canCustomEdit"
-            :to="value.app.editLocation"
-          >
-            {{ t('appsPlus.values.undeclaredDeclareEdit', { app: value.app.nameDisplay }) }}
-          </router-link>
-        </Banner>
-        <table
-          v-if="valueRows.length"
-          class="values-table"
-        >
-          <thead>
-            <tr>
-              <th>{{ t('appsPlus.values.key') }}</th>
-              <th>{{ t('appsPlus.values.default') }}</th>
-              <th>{{ t('appsPlus.values.override') }}</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="row in valueRows"
-              :key="row.name"
-            >
-              <td>
-                <code>{{ row.name }}</code>
-              </td>
-              <td>
-                <span v-if="String(row.default ?? '').trim() !== ''">{{ row.default }}</span>
-                <span
-                  v-else
-                  class="text-muted"
-                >—</span>
-              </td>
-              <td>
-                <span v-if="String(row.override ?? '').trim() !== ''">{{ row.override }}</span>
-                <span
-                  v-else
-                  class="text-muted"
-                >—</span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        <Banner
-          v-else-if="!undeclared.length"
-          color="info"
-          :label="t('appsPlus.values.none')"
+        <ValuesSummaryTable
+          :app="value.app"
+          :rows="valueRows"
+          :undeclared="undeclared"
+          :show-overrides="true"
         />
       </Tab>
 
@@ -524,16 +430,7 @@ export default {
           color="info"
           :label="t('appsPlus.helm.detailBanner', { chart: value.app.helmDisplay, repo: value.app.helmRepo || '—' })"
         />
-        <div
-          v-for="file in resources"
-          :key="file.name"
-          class="rendered"
-        >
-          <div class="rendered__name">
-            {{ file.name }}
-          </div>
-          <pre class="rendered__body">{{ file.content }}</pre>
-        </div>
+        <RenderedYamlFiles :files="resources" />
         <Banner
           v-if="!resources.length && !value.app?.isHelmChart"
           color="warning"
@@ -546,42 +443,14 @@ export default {
         :label="t('appsPlus.related.tabLabel')"
         :weight="9"
       >
-        <Banner
-          color="info"
-          :label="t('appsPlus.related.instanceHint')"
-        />
-        <SortableTable
+        <RelatedResourcesTable
           :rows="relatedRows"
-          :headers="relatedHeaders"
-          key-field="key"
-          :table-actions="false"
-          :row-actions="false"
-          :search="false"
-          data-testid="related-resources-table"
-        >
-          <template #cell:state="{row}">
-            <BadgeState
-              :color="row.stateColor"
-              :label="row.stateLabel"
-            />
-          </template>
-          <template #cell:name="{row}">
-            <router-link
-              v-if="row.to"
-              :to="row.to"
-            >
-              {{ row.name }}
-            </router-link>
-            <span v-else>{{ row.name }}</span>
-          </template>
-        </SortableTable>
+          :hint="t('appsPlus.related.instanceHint')"
+        />
       </Tab>
     </ResourceTabs>
 
-    <BlockedDeleteModal
-      :instance="blockedDeleteInstance"
-      @close="blockedDeleteInstance = null"
-    />
+    <BlockedDeleteModal />
   </div>
 </template>
 
@@ -612,47 +481,13 @@ export default {
       font-size: 14px;
     }
   }
-}
 
-.rendered {
-  margin-bottom: 16px;
-
-  &__name {
-    font-family: monospace;
-    font-size: 12px;
-    padding: 6px 10px;
-    background: var(--nav-bg);
-    border: 1px solid var(--border);
-    border-bottom: none;
-    border-radius: var(--border-radius) var(--border-radius) 0 0;
-  }
-
-  &__body {
+  &__cmd {
     margin: 0;
     padding: 10px;
     border: 1px solid var(--border);
-    border-radius: 0 0 var(--border-radius) var(--border-radius);
+    border-radius: var(--border-radius);
     overflow-x: auto;
-  }
-}
-
-.values-table {
-  border-collapse: collapse;
-  min-width: 50%;
-
-  th {
-    text-align: left;
-    font-weight: 600;
-    font-size: 12px;
-    color: var(--muted);
-    padding: 6px 24px 6px 0;
-    border-bottom: 1px solid var(--border);
-  }
-
-  td {
-    padding: 8px 24px 8px 0;
-    border-bottom: 1px solid var(--border);
-    vertical-align: top;
   }
 }
 </style>

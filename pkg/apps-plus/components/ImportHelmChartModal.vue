@@ -8,6 +8,7 @@ import {
   fetchHelmRepoIndex,
   fetchHelmChartDetails,
   extractChartImplicitDependencies,
+  normalizeHelmRepoUrl,
 } from '../helm';
 
 export default {
@@ -119,7 +120,7 @@ export default {
       this.error = '';
 
       try {
-        const repoUrl = this.repoUrl.trim().replace(/\/+$/, '').replace(/\/index\.yaml$/, '');
+        const repoUrl = normalizeHelmRepoUrl(this.repoUrl);
         let charts = this.charts;
 
         if (!charts.length) {

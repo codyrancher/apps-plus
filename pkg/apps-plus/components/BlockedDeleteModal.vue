@@ -10,14 +10,35 @@ export default {
     RcButton,
   },
 
-  props: {
-    instance: {
-      type:    Object,
-      default: null,
-    },
+  data() {
+    return { instance: null };
   },
 
-  emits: ['close'],
+  mounted() {
+    if (typeof window !== 'undefined') {
+      window.addEventListener('appsplus:blocked-delete', this.onBlockedDelete);
+    }
+  },
+
+  beforeUnmount() {
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('appsplus:blocked-delete', this.onBlockedDelete);
+    }
+  },
+
+  methods: {
+    onBlockedDelete(event) {
+      const instance = event?.detail?.instance;
+
+      if (instance) {
+        this.instance = instance;
+      }
+    },
+
+    close() {
+      this.instance = null;
+    },
+  },
 };
 </script>
 
@@ -26,7 +47,7 @@ export default {
     v-if="instance"
     class="dep-modal-backdrop"
     data-testid="dependency-delete-warning-modal"
-    @click.self="$emit('close')"
+    @click.self="close"
   >
     <div class="dep-modal">
       <div class="dep-modal__header">
@@ -48,7 +69,7 @@ export default {
             <router-link
               :to="depInst.detailLocation"
               data-testid="dependent-instance-link"
-              @click="$emit('close')"
+              @click="close"
             >
               {{ depInst.nameDisplay }} ({{ depInst.appDisplay }})
             </router-link>
@@ -59,7 +80,7 @@ export default {
         <RcButton
           variant="primary"
           data-testid="close-dependency-warning-btn"
-          @click="$emit('close')"
+          @click="close"
         >
           {{ t('generic.close') }}
         </RcButton>
