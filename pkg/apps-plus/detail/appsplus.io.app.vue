@@ -1,17 +1,25 @@
 <script>
 import ResourceTabs from '@shell/components/form/ResourceTabs';
+import SortableTable from '@shell/components/SortableTable';
 import Tab from '@shell/components/Tabbed/Tab';
 import { Banner } from '@components/Banner';
 import { RcButton } from '@components/RcButton';
-import { APP, APP_INSTANCE } from '../config/types';
+import { BadgeState } from '@components/BadgeState';
+import {
+  APP, APP_INSTANCE, FLEET_BUNDLE, RELATED_HEADERS, crdRelatedRows
+} from '../config/types';
 import { undeclaredWarnings } from '../render';
 
-/** An app's templates (or Helm chart), dependencies, and the instances currently running them. */
 export default {
   name: 'DetailApp',
 
   components: {
-    ResourceTabs, Tab, Banner, RcButton
+    ResourceTabs,
+    SortableTable,
+    Tab,
+    Banner,
+    RcButton,
+    BadgeState,
   },
 
   props: {
@@ -25,10 +33,19 @@ export default {
     await Promise.all([
       this.$store.dispatch('management/findAll', { type: APP }),
       this.$store.dispatch('management/findAll', { type: APP_INSTANCE }),
+      this.$store.dispatch('management/findAll', { type: FLEET_BUNDLE }).catch(() => []),
     ]);
   },
 
   computed: {
+    apps() {
+      return this.$store.getters['management/all'](APP) || [];
+    },
+
+    appsByName() {
+      return Object.fromEntries(this.apps.map((app) => [app.metadata?.name, app]));
+    },
+
     templates() {
       return this.value.templates || [];
     },
@@ -57,21 +74,106 @@ export default {
     undeclared() {
       return undeclaredWarnings(this.value);
     },
+
+    relatedHeaders() {
+      return RELATED_HEADERS;
+    },
+
+    relatedRows() {
+      const rows = [...crdRelatedRows(this.t)];
+
+      rows.push({
+        key:        `app-storage-${ this.value.metadata?.name }`,
+        stateColor: 'bg-success',
+        stateLabel: 'Stored',
+        kind:       'App (Template Storage)',
+        name:       this.value.nameDisplay,
+        namespace:  '—',
+        to:         this.value.detailLocation,
+        role:       this.t('appsPlus.related.appStorageRole', {
+          templates: this.templates.length,
+          values:    Object.keys(this.value.spec?.values || {}).length,
+        }),
+      });
+
+      this.dependencies.forEach((dep) => {
+        const depApp = this.appsByName[dep];
+        const missing = !depApp;
+
+        rows.push({
+          key:        `dep-app-${ dep }`,
+          stateColor: missing ? 'bg-error' : 'bg-success',
+          stateLabel: missing ? this.t('appsPlus.dependencies.missing') : 'Active',
+          kind:       'App (Dependency)',
+          name:       dep,
+          namespace:  '—',
+          to:         depApp?.detailLocation || null,
+          role:       this.t('appsPlus.related.dependencyAppRole'),
+        });
+      });
+
+      this.apps.forEach((other) => {
+        if (other.metadata?.name !== this.value.metadata?.name && (other.dependencies || []).includes(this.value.metadata?.name)) {
+          rows.push({
+            key:        `dependent-app-${ other.metadata?.name }`,
+            stateColor: 'bg-info',
+            stateLabel: 'Dependent',
+            kind:       'App (Dependent)',
+            name:       other.nameDisplay,
+            namespace:  '—',
+            to:         other.detailLocation,
+            role:       this.t('appsPlus.related.dependentAppRole', { app: this.value.nameDisplay }),
+          });
+        }
+      });
+
+      this.instances.forEach((inst) => {
+        rows.push({
+          key:        `inst-${ inst.metadata?.name }`,
+          stateColor: inst.state === 'active' ? 'bg-success' : 'bg-warning',
+          stateLabel: inst.stateDisplay || inst.state,
+          kind:       'AppInstance',
+          name:       inst.nameDisplay,
+          namespace:  inst.targetNamespace || '—',
+          to:         inst.detailLocation,
+          role:       this.t('appsPlus.related.instanceRole', { targets: inst.targetDisplay }),
+        });
+
+        (inst.bundles || []).forEach((bundle) => {
+          rows.push({
+            key:        `bundle-${ bundle.metadata?.namespace }-${ bundle.metadata?.name }`,
+            stateColor: 'bg-success',
+            stateLabel: `${ inst.readyDisplay } Ready`,
+            kind:       'Fleet Bundle',
+            name:       bundle.metadata?.name,
+            namespace:  bundle.metadata?.namespace || '—',
+            to:         bundle.detailLocation,
+            role:       this.t('appsPlus.related.bundleRole', { instance: inst.nameDisplay }),
+          });
+        });
+      });
+
+      return rows;
+    },
   },
 };
 </script>
 
 <template>
   <div>
-    <rc-button
+    <RcButton
       variant="secondary"
       class="mb-20"
       @click="$router.push(value.createInstanceLocation)"
     >
       {{ t('appsPlus.action.createInstance') }}
-    </rc-button>
+    </RcButton>
 
-    <ResourceTabs :value="value">
+    <ResourceTabs
+      :value="value"
+      :need-events="false"
+      :need-related="false"
+    >
       <Tab
         name="templates"
         :label="t('appsPlus.app.templates')"
@@ -111,7 +213,10 @@ export default {
           color="warning"
         >
           {{ t('appsPlus.values.undeclared', reference) }}
-          <router-link :to="value.editLocation">
+          <router-link
+            v-if="value.canCustomEdit"
+            :to="value.editLocation"
+          >
             {{ t('appsPlus.values.undeclaredDeclareEdit', { app: value.nameDisplay }) }}
           </router-link>
         </Banner>
@@ -164,10 +269,14 @@ export default {
             v-for="dep in dependencies"
             :key="dep"
           >
-            <code>{{ dep }}</code>
-            <span
-              class="ml-10 text-muted"
+            <router-link
+              v-if="appsByName[dep]?.detailLocation"
+              :to="appsByName[dep].detailLocation"
             >
+              <code>{{ dep }}</code>
+            </router-link>
+            <code v-else>{{ dep }}</code>
+            <span class="ml-10 text-muted">
               {{ missingDependencies.has(dep) ? t('appsPlus.dependencies.notFound') : t('appsPlus.dependencies.exists') }}
             </span>
           </li>
@@ -200,6 +309,42 @@ export default {
           color="info"
           :label="t('appsPlus.list.noInstances')"
         />
+      </Tab>
+
+      <Tab
+        name="related"
+        :label="t('appsPlus.related.tabLabel')"
+        :weight="8"
+      >
+        <Banner
+          color="info"
+          :label="t('appsPlus.related.appHint')"
+        />
+        <SortableTable
+          :rows="relatedRows"
+          :headers="relatedHeaders"
+          key-field="key"
+          :table-actions="false"
+          :row-actions="false"
+          :search="false"
+          data-testid="related-resources-table"
+        >
+          <template #cell:state="{row}">
+            <BadgeState
+              :color="row.stateColor"
+              :label="row.stateLabel"
+            />
+          </template>
+          <template #cell:name="{row}">
+            <router-link
+              v-if="row.to"
+              :to="row.to"
+            >
+              {{ row.name }}
+            </router-link>
+            <span v-else>{{ row.name }}</span>
+          </template>
+        </SortableTable>
       </Tab>
     </ResourceTabs>
   </div>

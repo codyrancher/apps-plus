@@ -1,38 +1,28 @@
 <script>
 import ResourceTable from '@shell/components/ResourceTable';
+import Masthead from '@shell/components/ResourceList/Masthead';
 import { STATE, AGE } from '@shell/config/table-headers';
 import { RcButton } from '@components/RcButton';
+import { BadgeState } from '@components/BadgeState';
 import ActionMenu from '@shell/components/ActionMenuShell.vue';
 import ImportHelmChartModal from '../components/ImportHelmChartModal.vue';
+import BlockedDeleteModal from '../components/BlockedDeleteModal.vue';
 import {
-  APP, APP_INSTANCE, FLEET_BUNDLE, PROVISIONING_CLUSTER
+  APP, APP_INSTANCE, FLEET_BUNDLE, FLEET_BUNDLE_DEPLOYMENT, PROVISIONING_CLUSTER
 } from '../config/types';
 
-/**
- * The Apps and Instances list: apps as group headings, their instances as the rows.
- *
- * This replaces the default table for the App type (the shell resolves list/<type>.vue), so
- * ResourceList above it still draws the masthead and the Create App button - what is here is
- * only the table.
- *
- * The shape is Cluster Explorer's Projects and Namespaces, including the part that is easy to
- * miss: an app with no instances still has to appear. A table grouped by a field can only show
- * groups that some row is in, so an empty app contributes one placeholder row whose only job
- * is to carry the group, and a slot keyed by its id renders it as a single "no instances yet"
- * cell instead of a row of blank columns.
- */
 export default {
-  name: 'ListAppsAndInstances',
-
-  // ResourceList renders this with `v-bind="$data"`, which includes its own `schema` (the App
-  // type) and `rows` (empty, because defining fetch() below made this component responsible
-  // for loading). Left to inherit, those land on the root ResourceTable as fall-through
-  // attributes and quietly override the ones bound in the template - a table wired to the
-  // wrong schema and no rows, with nothing logged.
+  name:         'ListAppsAndInstances',
   inheritAttrs: false,
 
   components: {
-    ResourceTable, RcButton, ActionMenu, ImportHelmChartModal
+    ResourceTable,
+    Masthead,
+    RcButton,
+    BadgeState,
+    ActionMenu,
+    ImportHelmChartModal,
+    BlockedDeleteModal,
   },
 
   props: {
@@ -42,48 +32,56 @@ export default {
     },
   },
 
-  /**
-   * Defining fetch() here is what makes this component responsible for loading everything.
-   * ResourceList checks for it and, finding one, skips its own fetch of the route's resource
-   * entirely - so the apps have to be fetched here too, and the `rows` prop it would
-   * otherwise have filled arrives empty.
-   *
-   * Bundles are here because an instance's state is Fleet's answer about its bundle, and the
-   * state column would otherwise be permanently pending.
-   */
   async fetch() {
     await Promise.all([
       this.$store.dispatch('management/findAll', { type: APP }),
       this.$store.dispatch('management/findAll', { type: APP_INSTANCE }),
       this.$store.dispatch('management/findAll', { type: FLEET_BUNDLE }),
-      // An instance that provisions its own cluster reads its state off that cluster before
-      // any bundle is meaningful, so the state column needs these loaded too.
+      this.$store.dispatch('management/findAll', { type: FLEET_BUNDLE_DEPLOYMENT }).catch(() => []),
       this.$store.dispatch('management/findAll', { type: PROVISIONING_CLUSTER }).catch(() => []),
     ]);
   },
 
+  data() {
+    return {
+      APP,
+      sweep:                 null,
+      pollTimer:             null,
+      importingHelm:         false,
+      openDepPopoverKey:     null,
+      blockedDeleteInstance: null,
+    };
+  },
+
   computed: {
+    appSchema() {
+      return this.$store.getters['management/schemaFor'](APP);
+    },
+
     instanceSchema() {
       return this.$store.getters['management/schemaFor'](APP_INSTANCE);
     },
 
     instances() {
-      return this.$store.getters['management/all'](APP_INSTANCE);
+      return this.$store.getters['management/all'](APP_INSTANCE) || [];
     },
 
     apps() {
-      return this.$store.getters['management/all'](APP);
+      return this.$store.getters['management/all'](APP) || [];
     },
 
     appsByName() {
-      return this.apps.reduce((acc, app) => {
-        acc[app.metadata?.name] = app;
-
-        return acc;
-      }, {});
+      return Object.fromEntries(this.apps.map((app) => [app.metadata?.name, app]));
     },
 
-    /** Apps with nothing under them, which the group-by would otherwise drop entirely. */
+    installedAppNames() {
+      return new Set(
+        this.instances
+          .filter((inst) => !inst.isTerminating && inst.spec?.app)
+          .map((inst) => inst.spec.app)
+      );
+    },
+
     emptyApps() {
       const used = new Set(this.instances.map((instance) => instance.spec?.app));
 
@@ -97,16 +95,15 @@ export default {
         mainRowKey:       app.id,
         groupById:        app.metadata?.name,
         isPlaceholder:    true,
+        nameDisplay:      this.t('appsPlus.list.noInstances'),
+        targetDisplay:    '—',
+        targetNamespace:  '—',
+        readyDisplay:     '—',
         app,
         availableActions: [],
       }));
     },
 
-    /**
-     * Instances whose app has been deleted are dropped rather than shown under an empty
-     * heading: the group header reads everything it displays off the app, and a group with no
-     * app is a row nobody can act on.
-     */
     tableRows() {
       const live = this.instances.filter((instance) => !!this.appsByName[instance.spec?.app]);
 
@@ -123,6 +120,12 @@ export default {
           sort:     ['nameSort'],
         },
         {
+          name:     'dependencies',
+          labelKey: 'appsPlus.headers.dependencies',
+          value:    'dependencies',
+          width:    180,
+        },
+        {
           name:        'clusters',
           labelKey:    'appsPlus.headers.clusters',
           value:       'targetDisplay',
@@ -130,8 +133,6 @@ export default {
           dashIfEmpty: true,
         },
         {
-          // Not `namespace`: ResourceTable has its own handling for a column of that name
-          // and removes this one out from under us.
           name:     'targetNamespace',
           labelKey: 'appsPlus.headers.namespace',
           value:    'targetNamespace',
@@ -149,31 +150,14 @@ export default {
     },
   },
 
-  data() {
-    return {
-      sweep:         null,
-      importingHelm: false,
-    };
-  },
-
-  /**
-   * Finish other people's deletes.
-   *
-   * An installation carries a finalizer so that deleting it leaves a Terminating row rather
-   * than an empty space while its cluster is still being torn down, and with no controller
-   * behind these CRDs something in the browser has to take that finalizer off again. This page
-   * is that something: it runs the check for every terminating row, so whoever has Apps and
-   * Installations open finishes the job - including for a delete somebody else started, and for
-   * one whose tab was closed halfway through.
-   *
-   * On a timer as well as on mount because what it waits for is not this page's data: a cluster
-   * finishes tearing down in Rancher, and nothing about that arrives here as an update to a row
-   * we are watching. Thirty seconds is the whole cost while nothing is terminating, since the
-   * sweep does no work at all when the list has no such rows.
-   */
   mounted() {
     this.releaseTerminating();
     this.sweep = setInterval(() => this.releaseTerminating(), 30000);
+    this.pollTimer = setInterval(() => this.refreshBundles(), 4000);
+    if (typeof window !== 'undefined') {
+      window.addEventListener('appsplus:blocked-delete', this.onBlockedDelete);
+      window.addEventListener('click', this.onOutsideClick);
+    }
   },
 
   beforeUnmount() {
@@ -181,28 +165,87 @@ export default {
       clearInterval(this.sweep);
       this.sweep = null;
     }
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('appsplus:blocked-delete', this.onBlockedDelete);
+      window.removeEventListener('click', this.onOutsideClick);
+    }
   },
 
   methods: {
-    /**
-     * Ask each terminating installation whether it may go yet.
-     *
-     * Sequential rather than parallel: each one asks Rancher for its cluster and its Bundles,
-     * and a list with several mid-delete would otherwise open a burst of forced reads for no
-     * gain - nobody is waiting on the second one finishing a moment sooner.
-     */
+    async refreshBundles() {
+      if (!this.instances.length) {
+        return;
+      }
+
+      await Promise.all([
+        this.$store.dispatch('management/findAll', { type: FLEET_BUNDLE, opt: { force: true } }).catch(() => []),
+        this.$store.dispatch('management/findAll', { type: FLEET_BUNDLE_DEPLOYMENT, opt: { force: true } }).catch(() => []),
+        this.$store.dispatch('management/findAll', { type: APP_INSTANCE, opt: { force: true } }).catch(() => []),
+      ]);
+    },
+
     async releaseTerminating() {
       for (const instance of this.instances.filter((row) => row.isTerminating)) {
         await instance.releaseWhenEmpty().catch(() => false);
       }
     },
 
-    appFor(group) {
-      return group?.rows?.[0]?.app || null;
+    onBlockedDelete(event) {
+      const instance = event?.detail?.instance;
+
+      if (instance) {
+        this.blockedDeleteInstance = instance;
+      }
     },
 
-    placeholderSlot(app) {
-      return `main-row:${ app.id }`;
+    openBlockedDeleteModal(row) {
+      if (row?.dependentInstances?.length) {
+        this.blockedDeleteInstance = row;
+      }
+    },
+
+    onOutsideClick() {
+      this.openDepPopoverKey = null;
+    },
+
+    toggleDepPopover(row) {
+      const key = row._key || row.id;
+
+      this.openDepPopoverKey = this.openDepPopoverKey === key ? null : key;
+    },
+
+    isDepPopoverOpen(row) {
+      const key = row._key || row.id;
+
+      return this.openDepPopoverKey === key;
+    },
+
+    rowDependencies(row) {
+      return row?.app?.dependencies || [];
+    },
+
+    rowMissingDependencies(row) {
+      return row?.app?.missingDependencies || [];
+    },
+
+    rowUninstalledDependencies(row) {
+      const deps = this.rowDependencies(row);
+      const missing = new Set(this.rowMissingDependencies(row));
+
+      return deps.filter((dep) => !missing.has(dep) && !this.installedAppNames.has(dep));
+    },
+
+    rowHasDepWarnings(row) {
+      return this.rowMissingDependencies(row).length > 0 ||
+        this.rowUninstalledDependencies(row).length > 0;
+    },
+
+    appFor(group) {
+      return group?.rows?.[0]?.app || null;
     },
 
     attentionCount(group) {
@@ -218,6 +261,23 @@ export default {
 
 <template>
   <div>
+    <Masthead
+      :schema="appSchema"
+      :resource="APP"
+    >
+      <template #extraActions>
+        <RcButton
+          variant="secondary"
+          size="large"
+          class="mr-10"
+          data-testid="import-helm-chart-btn"
+          @click="importingHelm = true"
+        >
+          {{ t('appsPlus.helm.importButton') }}
+        </RcButton>
+      </template>
+    </Masthead>
+
     <ResourceTable
       class="apps-plus-list"
       :schema="instanceSchema"
@@ -229,17 +289,6 @@ export default {
       group-tooltip="appsPlus.headers.app"
       key-field="_key"
     >
-      <template #header-right>
-        <RcButton
-          variant="secondary"
-          class="mr-10"
-          data-testid="import-helm-chart-btn"
-          @click="importingHelm = true"
-        >
-          {{ t('appsPlus.helm.importButton') }}
-        </RcButton>
-      </template>
-
       <template #group-by="group">
         <div class="app-bar">
           <div
@@ -264,17 +313,6 @@ export default {
               </span>
 
               <span
-                v-if="appFor(group.group)?.dependencies?.length"
-                class="dep-badge"
-                :class="{ 'dep-badge--missing': appFor(group.group).missingDependencies?.length }"
-                :title="t('appsPlus.list.dependsOn', { deps: appFor(group.group).dependencies.join(', ') })"
-              >
-                {{ t('appsPlus.list.dependsOn', { deps: appFor(group.group).dependencies.join(', ') }) }}
-              </span>
-
-              <!-- The title repeats the text because the badge is the part that clips at narrow
-                   widths, and an ellipsis with no way to read the rest is a dead end. -->
-              <span
                 v-if="attentionCount(group.group)"
                 class="attention"
                 :title="t('appsPlus.list.needsAttention', { count: attentionCount(group.group) })"
@@ -282,8 +320,6 @@ export default {
                 {{ t('appsPlus.list.needsAttention', { count: attentionCount(group.group) }) }}
               </span>
             </div>
-            <!-- One line, and the whole thing on hover. A description long enough to wrap used to
-                 push the group header past the row it heads and cover the installation under it. -->
             <div
               v-if="appFor(group.group)?.description"
               v-clean-tooltip="appFor(group.group).description"
@@ -293,14 +329,14 @@ export default {
             </div>
           </div>
           <div class="right mr-10">
-            <rc-button
+            <RcButton
               v-if="appFor(group.group)"
               variant="secondary"
               class="mr-5"
               @click="$router.push(appFor(group.group).createInstanceLocation)"
             >
               {{ t('appsPlus.action.createInstance') }}
-            </rc-button>
+            </RcButton>
             <ActionMenu
               v-if="appFor(group.group)"
               :resource="appFor(group.group)"
@@ -311,37 +347,155 @@ export default {
         </div>
       </template>
 
-      <template #cell:name="{row}">
-        <router-link
-          v-if="row.detailLocation"
-          :to="row.detailLocation"
-        >
-          {{ row.nameDisplay }}
-        </router-link>
-        <span v-else>{{ row.nameDisplay }}</span>
+      <template #cell:state="{row}">
+        <BadgeState
+          v-if="row.isPlaceholder"
+          color="bg-darker"
+          :label="t('appsPlus.list.notInstalled')"
+          data-testid="state-not-installed"
+        />
+        <BadgeState
+          v-else
+          :value="row"
+          data-testid="instance-state-badge"
+        />
       </template>
 
-      <template
-        v-for="app in emptyApps"
-        :key="app.id"
-        #[placeholderSlot(app)]="{ fullColspan }"
-      >
-        <tr class="main-row">
-          <td
-            class="empty text-center"
-            :colspan="fullColspan"
+      <template #cell:name="{row}">
+        <span
+          v-if="row.isPlaceholder"
+          class="text-muted"
+        >
+          {{ t('appsPlus.list.noInstances') }}
+        </span>
+        <div
+          v-else
+          class="name-cell"
+        >
+          <router-link
+            v-if="row.detailLocation"
+            :to="row.detailLocation"
           >
-            {{ t('appsPlus.list.noInstances') }}
-          </td>
-        </tr>
+            {{ row.nameDisplay }}
+          </router-link>
+          <span v-else>{{ row.nameDisplay }}</span>
+
+          <button
+            v-if="row.isDependency"
+            type="button"
+            class="dep-instance-badge"
+            data-testid="dependency-instance-badge"
+            :title="t('appsPlus.list.dependencyInstanceHint')"
+            @click.stop="openBlockedDeleteModal(row)"
+          >
+            {{ t('appsPlus.list.dependencyBadge') }}
+          </button>
+        </div>
+      </template>
+
+      <template #cell:dependencies="{row}">
+        <span
+          v-if="!rowDependencies(row).length"
+          class="text-muted"
+        >
+          —
+        </span>
+        <div
+          v-else
+          class="dep-cell"
+          @click.stop
+        >
+          <button
+            type="button"
+            class="dep-trigger"
+            :class="{ 'dep-trigger--warning': rowHasDepWarnings(row) }"
+            data-testid="dependencies-trigger"
+            @click="toggleDepPopover(row)"
+          >
+            <span>
+              {{ rowDependencies(row).length === 1 ? rowDependencies(row)[0] : rowDependencies(row).length }}
+            </span>
+            <i
+              v-if="rowHasDepWarnings(row)"
+              class="icon icon-warning ml-5"
+            />
+          </button>
+
+          <div
+            v-if="isDepPopoverOpen(row)"
+            class="dep-popover"
+            data-testid="dependencies-popover"
+          >
+            <div class="dep-popover__header">
+              {{ t('appsPlus.dependencies.popoverTitle', { count: rowDependencies(row).length }) }}
+            </div>
+            <ul class="dep-popover__list">
+              <li
+                v-for="dep in rowDependencies(row)"
+                :key="dep"
+                class="dep-popover__item"
+              >
+                <router-link
+                  v-if="appsByName[dep]?.detailLocation"
+                  :to="appsByName[dep].detailLocation"
+                  @click="openDepPopoverKey = null"
+                >
+                  {{ dep }}
+                </router-link>
+                <span v-else>{{ dep }}</span>
+
+                <BadgeState
+                  v-if="!appsByName[dep]"
+                  color="bg-error"
+                  :label="t('appsPlus.dependencies.missing')"
+                />
+                <BadgeState
+                  v-else-if="installedAppNames.has(dep)"
+                  color="bg-success"
+                  :label="t('appsPlus.dependencies.installed')"
+                />
+                <BadgeState
+                  v-else
+                  color="bg-warning"
+                  :label="t('appsPlus.dependencies.notInstalled')"
+                />
+              </li>
+            </ul>
+
+            <div
+              v-if="rowHasDepWarnings(row)"
+              class="dep-popover__warnings"
+              data-testid="dependencies-popover-warnings"
+            >
+              <div
+                v-if="rowMissingDependencies(row).length"
+                class="dep-popover__warning dep-popover__warning--error"
+              >
+                <i class="icon icon-warning mr-5" />
+                {{ t('appsPlus.dependencies.missingWarning', { deps: rowMissingDependencies(row).join(', ') }) }}
+              </div>
+              <div
+                v-if="rowUninstalledDependencies(row).length"
+                class="dep-popover__warning"
+              >
+                <i class="icon icon-info mr-5" />
+                {{ t('appsPlus.dependencies.uninstalledWarning', { deps: rowUninstalledDependencies(row).join(', ') }) }}
+              </div>
+            </div>
+          </div>
+        </div>
       </template>
     </ResourceTable>
 
     <ImportHelmChartModal
       v-if="importingHelm"
-      :create-app="true"
       @imported="onHelmImported"
       @close="importingHelm = false"
+    />
+
+    <BlockedDeleteModal
+      :instance="blockedDeleteInstance"
+      @close="blockedDeleteInstance = null"
     />
   </div>
 </template>
@@ -355,14 +509,8 @@ export default {
       flex-direction: row;
       justify-content: space-between;
       align-items: center;
-      // The shell sizes a group header for a single line, and anything taller spills out of the
-      // row and paints over the installation underneath it - which reads as the description
-      // wrapping around the row, and silently swallows the clicks meant for the links in it.
-      // The description below is kept to one line, so the header fits what it is given.
       min-height: 40px;
 
-      // The name and the description share the one line the shell gives a group header. Stacked,
-      // the description hung below the row and painted over the installation under it.
       .group-tab {
         max-width: calc(100% - 260px);
         min-width: 0;
@@ -379,14 +527,11 @@ export default {
         line-height: 30px;
         flex-shrink: 0;
 
-        // The name never gives way to the badge: shrinking it force-broke "loop-web" in half,
-        // and of the two the badge is the one that can afford to clip.
         > :first-child {
           flex-shrink: 0;
         }
       }
 
-      // The full text is on the tooltip; this is the one line there is room for.
       .description {
         flex: 1;
         min-width: 0;
@@ -407,27 +552,6 @@ export default {
         white-space: nowrap;
       }
 
-      .dep-badge {
-        margin-left: 8px;
-        padding: 1px 8px;
-        border-radius: var(--border-radius);
-        background: var(--box-bg);
-        border: 1px solid var(--border);
-        color: var(--body-text);
-        font-size: 11px;
-        line-height: 18px;
-        white-space: nowrap;
-
-        &--missing {
-          background: var(--warning-badge, var(--warning-banner));
-          color: var(--on-warning-banner);
-          border-color: transparent;
-        }
-      }
-
-      // The same pair of tokens as the Warning state pill a few columns over: near-white on
-      // the raw warning yellow was unreadable, and this row should not invent its own idea of
-      // what a warning looks like anyway.
       .attention {
         margin-left: 10px;
         padding: 1px 8px;
@@ -441,8 +565,106 @@ export default {
       }
     }
 
-    td.empty {
-      padding: 12px;
+    td {
+      overflow: visible;
+    }
+  }
+}
+
+.name-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dep-instance-badge {
+  padding: 1px 8px;
+  border-radius: var(--border-radius);
+  background: var(--warning-badge, var(--warning-banner));
+  color: var(--on-warning-banner);
+  border: none;
+  font-size: 11px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.dep-cell {
+  position: relative;
+  display: inline-block;
+}
+
+.dep-trigger {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 12px;
+  background: var(--box-bg);
+  border: 1px solid var(--border);
+  color: var(--body-text);
+  font-size: 12px;
+  cursor: pointer;
+
+  &:hover {
+    border-color: var(--link);
+    color: var(--link);
+  }
+
+  &--warning {
+    border-color: var(--warning);
+  }
+}
+
+.dep-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 100;
+  min-width: 280px;
+  padding: 12px;
+  background: var(--body-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--border-radius);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+
+  &__header {
+    font-size: 12px;
+    font-weight: 600;
+    margin-bottom: 8px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  &__list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  &__item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 4px 0;
+    font-family: monospace;
+    font-size: 12px;
+  }
+
+  &__warnings {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  &__warning {
+    font-size: 12px;
+    color: var(--warning);
+
+    &--error {
+      color: var(--error);
     }
   }
 }

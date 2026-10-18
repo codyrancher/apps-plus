@@ -3,24 +3,24 @@ import ResourceTabs from '@shell/components/form/ResourceTabs';
 import SortableTable from '@shell/components/SortableTable';
 import Tab from '@shell/components/Tabbed/Tab';
 import { Banner } from '@components/Banner';
-import { RcButton } from '@components/RcButton';
+import { BadgeState } from '@components/BadgeState';
+import BlockedDeleteModal from '../components/BlockedDeleteModal.vue';
 import {
-  FLEET_BUNDLE, FLEET_BUNDLE_DEPLOYMENT, APP, PROVISIONING_CLUSTER, REGISTRATION_TOKEN, steveType
+  FLEET_BUNDLE, FLEET_BUNDLE_DEPLOYMENT, APP, APP_INSTANCE, PROVISIONING_CLUSTER, REGISTRATION_TOKEN,
+  RELATED_HEADERS, crdRelatedRows, steveType
 } from '../config/types';
 import { undeclaredWarnings } from '../render';
 
-/**
- * What one instance actually deployed, and what Fleet says about it.
- *
- * The rendered YAML is recomputed from the app rather than read back off the Bundle, so a
- * template edited since the last deploy shows as what would be deployed. The Bundle summary
- * beside it is the other half of that: what is on the clusters right now.
- */
 export default {
   name: 'DetailAppInstance',
 
   components: {
-    ResourceTabs, Tab, Banner, RcButton, SortableTable
+    ResourceTabs,
+    Tab,
+    Banner,
+    SortableTable,
+    BadgeState,
+    BlockedDeleteModal,
   },
 
   props: {
@@ -31,20 +31,21 @@ export default {
   },
 
   data() {
-    return { registrationToken: null };
+    return {
+      registrationToken:     null,
+      blockedDeleteInstance: null,
+    };
   },
 
   async fetch() {
     await Promise.all([
       this.$store.dispatch('management/findAll', { type: APP }),
+      this.$store.dispatch('management/findAll', { type: APP_INSTANCE }).catch(() => []),
       this.$store.dispatch('management/findAll', { type: FLEET_BUNDLE }),
       this.$store.dispatch('management/findAll', { type: FLEET_BUNDLE_DEPLOYMENT }).catch(() => []),
       this.$store.dispatch('management/findAll', { type: PROVISIONING_CLUSTER }).catch(() => []),
     ]);
 
-    // A custom cluster is joined by running a command on a machine, and Rancher publishes it
-    // on a token in the management cluster's own namespace. Only worth fetching once there is
-    // a cluster to join.
     const namespace = this.value.managementClusterNamespace;
 
     if (namespace) {
@@ -57,16 +58,35 @@ export default {
     }
   },
 
+  mounted() {
+    if (typeof window !== 'undefined') {
+      window.addEventListener('appsplus:blocked-delete', this.onBlockedDelete);
+    }
+  },
+
+  beforeUnmount() {
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('appsplus:blocked-delete', this.onBlockedDelete);
+    }
+  },
+
   computed: {
+    apps() {
+      return this.$store.getters['management/all'](APP) || [];
+    },
+
+    appsByName() {
+      return Object.fromEntries(this.apps.map((app) => [app.metadata?.name, app]));
+    },
+
+    instances() {
+      return this.$store.getters['management/all'](APP_INSTANCE) || [];
+    },
+
     resources() {
       return this.value.renderedResources || [];
     },
 
-    /**
-     * What this installation was asked, and how it answered: each of the app's declared values
-     * with its default and the override made here, plus any override for a value the app no
-     * longer declares - those substitute into nothing and deserve to be visible, not silent.
-     */
     valueRows() {
       const app = this.value.app;
       const defaults = app?.spec?.values || {};
@@ -80,15 +100,10 @@ export default {
       }));
     },
 
-    /** See the app detail page: templates using `${...}` the app never declared. */
     undeclared() {
       return undeclaredWarnings(this.value.app);
     },
 
-    /**
-     * The banner explains the same condition the state pill beside it shows, so it wears the
-     * same colour: a yellow Warning next to a calm blue explanation reads as two opinions.
-     */
     stateBannerColor() {
       const state = this.value.state;
 
@@ -99,13 +114,6 @@ export default {
       return state === 'warning' ? 'warning' : 'info';
     },
 
-    /**
-     * Deployed resources, each with a link to the cluster it is on.
-     *
-     * Fleet reports a cluster by the name of its provisioning.cattle.io Cluster, while the
-     * explorer is addressed by the management cluster id, so the two have to be matched up
-     * here - `status.clusterName` on the provisioning cluster is that id.
-     */
     deployedHeaders() {
       return [
         {
@@ -148,8 +156,6 @@ export default {
       return this.value.deployedResources.map((row) => {
         const id = idByName[row.clusterName];
         const resource = steveType({ apiVersion: row.apiVersion, kind: row.kind });
-        // A namespaced resource and a cluster-scoped one are different routes in the explorer,
-        // and the resource is only addressable at all once its cluster has a management id.
         const to = !id ? null : row.namespace ? {
           name:   'c-cluster-product-resource-namespace-id',
           params: {
@@ -171,13 +177,132 @@ export default {
       });
     },
 
+    relatedHeaders() {
+      return RELATED_HEADERS;
+    },
+
+    relatedRows() {
+      const rows = [];
+      const app = this.value.app;
+
+      if (app) {
+        rows.push({
+          key:        `app-source-${ app.metadata?.name }`,
+          stateColor: 'bg-success',
+          stateLabel: 'Stored',
+          kind:       'App (Template Storage)',
+          name:       app.nameDisplay,
+          namespace:  '—',
+          to:         app.detailLocation,
+          role:       this.t('appsPlus.related.appStorageRole', {
+            templates: (app.templates || []).length,
+            values:    Object.keys(app.spec?.values || {}).length,
+          }),
+        });
+      }
+
+      rows.push(...crdRelatedRows(this.t));
+
+      (app?.dependencies || []).forEach((dep) => {
+        const depInst = this.instances.find((inst) => inst.spec?.app === dep && !inst.isTerminating);
+        const depApp = this.appsByName[dep];
+
+        if (depInst) {
+          rows.push({
+            key:        `dep-inst-${ depInst.metadata?.name }`,
+            stateColor: depInst.state === 'active' ? 'bg-success' : 'bg-warning',
+            stateLabel: depInst.stateDisplay || depInst.state,
+            kind:       'AppInstance (Dependency)',
+            name:       depInst.nameDisplay,
+            namespace:  depInst.targetNamespace || '—',
+            to:         depInst.detailLocation,
+            role:       this.t('appsPlus.related.dependencyInstanceRole', { app: dep }),
+          });
+        } else {
+          rows.push({
+            key:        `dep-app-${ dep }`,
+            stateColor: depApp ? 'bg-warning' : 'bg-error',
+            stateLabel: depApp ? this.t('appsPlus.dependencies.notInstalled') : this.t('appsPlus.dependencies.missing'),
+            kind:       'App (Dependency)',
+            name:       dep,
+            namespace:  '—',
+            to:         depApp?.detailLocation || null,
+            role:       this.t('appsPlus.related.dependencyAppRole'),
+          });
+        }
+      });
+
+      (this.value.dependentInstances || []).forEach((reqInst) => {
+        rows.push({
+          key:        `req-inst-${ reqInst.metadata?.name }`,
+          stateColor: 'bg-info',
+          stateLabel: 'Dependent',
+          kind:       'AppInstance (Dependent)',
+          name:       reqInst.nameDisplay,
+          namespace:  reqInst.targetNamespace || '—',
+          to:         reqInst.detailLocation,
+          role:       this.t('appsPlus.related.dependentInstanceRole', { app: reqInst.appDisplay }),
+        });
+      });
+
+      (this.value.bundles || []).forEach((bundle) => {
+        rows.push({
+          key:        `bundle-${ bundle.metadata?.namespace }-${ bundle.metadata?.name }`,
+          stateColor: 'bg-success',
+          stateLabel: `${ this.value.readyDisplay } Ready`,
+          kind:       'Fleet Bundle',
+          name:       bundle.metadata?.name,
+          namespace:  bundle.metadata?.namespace || '—',
+          to:         bundle.detailLocation,
+          role:       this.t('appsPlus.related.bundleRole', { instance: this.value.nameDisplay }),
+        });
+      });
+
+      (this.value.bundleDeployments || []).forEach((bd) => {
+        rows.push({
+          key:        `bd-${ bd.metadata?.namespace }-${ bd.metadata?.name }`,
+          stateColor: 'bg-success',
+          stateLabel: 'Active',
+          kind:       'Fleet BundleDeployment',
+          name:       bd.metadata?.name,
+          namespace:  bd.metadata?.namespace || '—',
+          to:         null,
+          role:       this.t('appsPlus.related.bundleDeploymentRole'),
+        });
+      });
+
+      this.deployedRows.forEach((deployed) => {
+        rows.push({
+          key:        `deployed-${ deployed.key }`,
+          stateColor: deployed.ready ? 'bg-success' : 'bg-warning',
+          stateLabel: deployed.stateLabel,
+          kind:       deployed.kind,
+          name:       deployed.name,
+          namespace:  deployed.namespace || '—',
+          to:         deployed.to,
+          role:       this.t('appsPlus.related.deployedResourceRole', { cluster: deployed.clusterName }),
+        });
+      });
+
+      return rows;
+    },
+
     cluster() {
       return this.value.provisionedCluster;
     },
 
-    /** The command that joins a machine to a custom cluster, once Rancher has published one. */
     nodeCommand() {
       return this.registrationToken?.status?.nodeCommand || null;
+    },
+  },
+
+  methods: {
+    onBlockedDelete(event) {
+      const instance = event?.detail?.instance;
+
+      if (instance) {
+        this.blockedDeleteInstance = instance;
+      }
     },
   },
 };
@@ -185,6 +310,29 @@ export default {
 
 <template>
   <div>
+    <Banner
+      v-if="value.dependentInstances && value.dependentInstances.length"
+      color="warning"
+      data-testid="dependency-instance-banner"
+    >
+      <div>
+        {{ t('appsPlus.dependencies.cannotDeleteWarning', { name: value.nameDisplay, app: value.appDisplay }) }}
+        <span class="ml-5">{{ t('appsPlus.dependencies.reliedOnByLabel') }}</span>
+        <span
+          v-for="(depInst, idx) in value.dependentInstances"
+          :key="depInst.metadata.name"
+          class="ml-5"
+        >
+          <router-link
+            :to="depInst.detailLocation"
+            data-testid="dependent-instance-link"
+          >
+            {{ depInst.nameDisplay }} ({{ depInst.appDisplay }})
+          </router-link><span v-if="idx < value.dependentInstances.length - 1">,</span>
+        </span>
+      </div>
+    </Banner>
+
     <Banner
       v-if="value.stateDescription"
       :color="stateBannerColor"
@@ -317,7 +465,7 @@ export default {
         >
           {{ t('appsPlus.values.undeclared', reference) }}
           <router-link
-            v-if="value.app?.editLocation"
+            v-if="value.app?.canCustomEdit"
             :to="value.app.editLocation"
           >
             {{ t('appsPlus.values.undeclaredDeclareEdit', { app: value.app.nameDisplay }) }}
@@ -359,8 +507,6 @@ export default {
             </tr>
           </tbody>
         </table>
-        <!-- See the app detail page: "declares no values" must not sit under a warning that
-             just said a template refers to one. -->
         <Banner
           v-else-if="!undeclared.length"
           color="info"
@@ -394,15 +540,52 @@ export default {
           :label="t('appsPlus.app.noTemplates')"
         />
       </Tab>
+
+      <Tab
+        name="related"
+        :label="t('appsPlus.related.tabLabel')"
+        :weight="9"
+      >
+        <Banner
+          color="info"
+          :label="t('appsPlus.related.instanceHint')"
+        />
+        <SortableTable
+          :rows="relatedRows"
+          :headers="relatedHeaders"
+          key-field="key"
+          :table-actions="false"
+          :row-actions="false"
+          :search="false"
+          data-testid="related-resources-table"
+        >
+          <template #cell:state="{row}">
+            <BadgeState
+              :color="row.stateColor"
+              :label="row.stateLabel"
+            />
+          </template>
+          <template #cell:name="{row}">
+            <router-link
+              v-if="row.to"
+              :to="row.to"
+            >
+              {{ row.name }}
+            </router-link>
+            <span v-else>{{ row.name }}</span>
+          </template>
+        </SortableTable>
+      </Tab>
     </ResourceTabs>
+
+    <BlockedDeleteModal
+      :instance="blockedDeleteInstance"
+      @close="blockedDeleteInstance = null"
+    />
   </div>
 </template>
 
 <style lang="scss" scoped>
-.deployed__state {
-  font-weight: 600;
-}
-
 .deployed__state--ready {
   color: var(--success);
 }

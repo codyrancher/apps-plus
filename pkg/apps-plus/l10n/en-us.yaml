@@ -1,8 +1,6 @@
 product:
   apps-plus: Apps Plus
 
-# The nav entry and the list masthead both use the plural form, which is why the page reads
-# "Apps and Installations" while a single one of them is just an App.
 typeLabel:
   appsplus.io.app: |-
     {count, plural,
@@ -16,31 +14,16 @@ typeLabel:
     }
 
 appsPlus:
-  import:
-    title: Import a resource as a template
-    hint: The resource is copied as it is now, with what the cluster wrote on it removed and its name parameterised. Nothing on the cluster is changed.
-    cluster: Cluster
-    type: Resource Type
-    resource: Resource
-    action: Import
   helm:
     importButton: Import Helm Chart
-    importTitle: Import Helm Chart
-    importHint: Select a connected Rancher Helm repository or enter a Helm repository URL to import a chart as an App.
-    clusterRepo: Cluster Repository
+    importTitle: Import Helm Chart Repository
+    importHint: Enter a Helm repository URL to automatically discover and import all charts and their versions as Apps.
     repoUrl: Helm Repository URL
     repoUrlPlaceholder: https://example.com/charts
-    loadCharts: Load Charts
     loadingCharts: Loading...
-    chart: Chart
-    version: Version
-    appName: App Name
-    releaseName: Release Name
-    importAction: Import
+    chartsFound: '{count, plural, one {1 chart found in repository} other {# charts found in repository}}'
+    importAction: Import All Charts
     importing: Importing...
-    clearChart: Clear Helm Chart
-    tabHint: Configure a Helm chart from a repository, or click Import Helm Chart to browse a repository index and import its default values and metadata.
-    implicitDependenciesFound: 'Implicit dependencies detected on this chart: {deps}'
     detailBanner: 'Deploys Helm chart {chart} from {repo}'
   dependencies:
     hint: Add apps that must exist in Apps Plus before this app can be installed. Select an existing app from the dropdown or type a new app name to add a dependency that does not exist yet.
@@ -52,6 +35,35 @@ appsPlus:
     exists: Exists
     notFound: Does not exist yet
     empty: This app has no dependencies.
+    popoverTitle: 'Dependencies ({count})'
+    missing: Missing App
+    installed: Installed
+    notInstalled: Not Installed
+    missingWarning: 'Missing dependency app(s): {deps}'
+    uninstalledWarning: 'Not yet installed: {deps} (will be installed automatically)'
+    cannotDeleteTitle: 'Cannot Delete Dependency Installation "{name}"'
+    cannotDeleteWarning: 'Installation "{name}" ({app}) was installed as a required dependency and cannot be deleted while other installations rely on it.'
+    reliedOnByLabel: 'Relied upon by:'
+  related:
+    tabLabel: Related Resources
+    appHint: CustomResourceDefinitions, template storage, dependency apps, installations, and Fleet bundles associated with this App.
+    instanceHint: Source App template storage, CustomResourceDefinitions, dependencies, Fleet bundles, and Kubernetes resources deployed by this installation.
+    state: State
+    kind: Type / Kind
+    name: Name
+    namespace: Namespace
+    role: Storage / Role
+    crdAppsRole: CRD defining App template, Helm chart, and dependency storage in etcd
+    crdAppInstancesRole: CRD defining AppInstance installation state and value overrides
+    appStorageRole: 'App resource storing {templates} template/chart file(s) and {values} default value(s)'
+    dependencyAppRole: Required dependency App
+    dependentAppRole: 'App that depends on {app}'
+    dependencyInstanceRole: 'Installed as required dependency ({app})'
+    dependentInstanceRole: 'Installation of {app} that relies on this dependency'
+    instanceRole: 'Installation targeting {targets}'
+    bundleRole: 'Fleet Bundle packaging rendered resources for {instance}'
+    bundleDeploymentRole: Tracks resources applied to downstream cluster by Fleet agent
+    deployedResourceRole: 'Kubernetes resource deployed on cluster {cluster}'
   values:
     unused: 'This app does not declare {key}. It is kept, but it is substituted into nothing.'
     undeclared: '{file} refers to {refs}, which {count, plural, one {is not a parameter} other {are not parameters}} of this app, and will deploy as written.'
@@ -73,28 +85,30 @@ appsPlus:
   action:
     createApp: Create App
     createInstance: Install
-    redeploy: Redeploy
     appActions: 'Actions for {name}'
   list:
     noInstances: No installations of this app yet.
+    notInstalled: Not Installed
+    dependencyBadge: Dependency
+    dependencyInstanceHint: Installed as a dependency of another app. Click to view dependent installations.
     needsAttention: '{count, plural, one {1 installation needs} other {# installations need}} values before the new template can be deployed.'
-    noApps: No apps yet. An app is a set of YAML templates or a Helm chart; an installation is one deployment of it.
     helmBadge: 'Helm: {chart}'
     dependsOn: 'Depends on: {deps}'
   headers:
     app: App
+    dependencies: Dependencies
     clusters: Clusters
     namespace: Namespace
     ready: Ready
     templates: Templates
     instances: Installations
+    chart: Chart
+    repo: Repository
   app:
     templates: Templates
-    helmChart: Helm Chart
     dependencies: Dependencies
     provided: Provided automatically, in every template
     addTemplate: Create
-    importTemplate: Import
     fileName: File Name
     values: Default Values
     valueKeyPlaceholder: Pick a value your templates use
@@ -107,6 +121,8 @@ appsPlus:
     destination: Where it goes
     app: App
     appHint: The app this is an installation of. Its templates or Helm chart are what gets deployed.
+    version: Chart Version
+    versionHint: Select which version of the Helm chart to deploy for this installation.
     namespace: Target Namespace
     namespaceHint: Namespace the rendered resources are created in on each target cluster.
     targets: Target Clusters
@@ -114,7 +130,6 @@ appsPlus:
     values: Values
     valuesHint: Everything this app lets an installation set. A field left blank deploys with the default shown in it.
     noValues: This app has no values to set. It installs exactly as it is defined.
-    valueDefault: 'Blank uses the app default: {value}'
     valueNoDefault: Required
     valueMissing: The app has no default for this, so this installation has to supply it.
     deployed: Deployed Resources

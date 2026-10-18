@@ -1,9 +1,10 @@
 import jsyaml from 'js-yaml';
 import SteveModel from '@shell/plugins/steve/steve-class';
 import {
-  APP, FLEET_BUNDLE, FLEET_BUNDLE_DEPLOYMENT, FLEET_CLUSTER, BUNDLE_PREFIX, DEFAULT_WORKSPACE,
+  APP, APP_INSTANCE, FLEET_BUNDLE, FLEET_BUNDLE_DEPLOYMENT, FLEET_CLUSTER, BUNDLE_PREFIX, DEFAULT_WORKSPACE,
   DEFAULT_TARGET_NAMESPACE,
-  PROVISIONING_CLUSTER, PROVISION_WORKSPACE, PRODUCT_NAME, BLANK_CLUSTER, LIST_ROUTE, steveType
+  PROVISIONING_CLUSTER, PROVISION_WORKSPACE, PRODUCT_NAME, BLANK_CLUSTER, LIST_ROUTE, steveType,
+  DEPENDENCY_INSTANCE_LABEL, REQUIRED_BY_ANNOTATION, parseDependencyList
 } from '../config/types';
 import { NORMAN } from '@shell/config/types';
 import {
@@ -12,33 +13,11 @@ import {
 import {
   renderTemplates, mergeValues, substitute, missingValues, isSet, typedOverrides, unflattenValues
 } from '../render';
+import { fetchHelmVersionDetails } from '../helm';
 
-/**
- * What keeps a deleted installation in the list until its things are gone.
- *
- * Its own domain, as Kubernetes requires of anything that is not a core finalizer, so it is
- * obvious in `kubectl get -o yaml` whose it is and what to remove by hand if this extension is
- * ever uninstalled while something is mid-delete.
- */
 const FINALIZER = 'appsplus.io/cleanup';
 
-/**
- * An AppInstance is one deployment of an App, and it owns everything it creates.
- *
- * There is no controller behind these CRDs. Saving an instance is what writes the Fleet
- * Bundle - and, if the instance provisions its own cluster, the provisioning.cattle.io Cluster
- * too. Fleet's controllers and Rancher's provisioner do everything after that.
- *
- * Both of those carry an ownerReference back to the instance, so deleting an instance removes
- * what it deployed *and the cluster it brought with it*. That is deliberate and it is
- * destructive, which is why `confirmRemove` below makes Rancher demand the name be typed.
- * (A namespaced dependent may name a cluster-scoped owner; the reverse is what is disallowed.)
- *
- * One instance owns at most one cluster.
- */
 export default class AppInstance extends SteveModel {
-  /** No detail-page cards - same reasoning as on the App model: showing any invites the
-   * shell's stock "Extras" card in beside them. */
   get cards() {
     return [];
   }
@@ -62,28 +41,46 @@ export default class AppInstance extends SteveModel {
     return this.app?.nameDisplay || this.spec?.app || '—';
   }
 
-  /**
-   * Where saving, cancelling or going back from one of these lands.
-   *
-   * Apps and Installations, not this type's own list. `configureType` makes AppInstance a real
-   * type so it can be created, edited and shown as YAML, and the shell gives every real type a
-   * generic list route whether or not anything links to it - a flat, ungrouped Installations
-   * page that is a second description of the rows already grouped under their apps. Nothing
-   * points at it deliberately; saving did, which is how anybody found it.
-   *
-   * Four hooks because the shell asks the question four different ways, and each one is reached
-   * by a different button:
-   *
-   *   doneRoute / doneParams  Save, through the create-edit-view mixin's `done()`. A route
-   *                           *name* and its params, not a location.
-   *   doneOverride            Cancel. CruResource routes itself unless it is given
-   *                           `cancel-event`, and `@cancel="done"` on the form is never
-   *                           reached - see emitOrRoute in components/CruResource.vue.
-   *   listLocation            The breadcrumb and the resource header.
-   *
-   * Setting one of them sends the other three somewhere else, which is how Save could be fixed
-   * and Cancel go on landing on a page nothing links to.
-   */
+  get version() {
+    return this.spec?.version || this.app?.helmVersion || '';
+  }
+
+  get dependentInstances() {
+    const myApp = this.spec?.app;
+
+    if (!myApp) {
+      return [];
+    }
+
+    try {
+      const allInstances = this.$rootGetters['management/all'](APP_INSTANCE) || [];
+      const requiredByNames = new Set(
+        parseDependencyList(this.metadata?.annotations?.[REQUIRED_BY_ANNOTATION])
+      );
+
+      return allInstances.filter((inst) => {
+        if (!inst || inst.metadata?.name === this.metadata?.name || inst.isTerminating) {
+          return false;
+        }
+
+        if (requiredByNames.has(inst.metadata?.name)) {
+          return true;
+        }
+
+        const deps = inst.app?.dependencies || [];
+
+        return deps.includes(myApp);
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  get isDependency() {
+    return this.metadata?.labels?.[DEPENDENCY_INSTANCE_LABEL] === 'true' ||
+      this.dependentInstances.length > 0;
+  }
+
   get doneRoute() {
     return LIST_ROUTE;
   }
@@ -102,7 +99,6 @@ export default class AppInstance extends SteveModel {
     return this.listLocation;
   }
 
-  /** The group this row sits under in the Apps and Installations list. */
   get groupById() {
     return this.spec?.app || '';
   }
@@ -111,24 +107,14 @@ export default class AppInstance extends SteveModel {
     return this.spec?.namespace || DEFAULT_TARGET_NAMESPACE;
   }
 
-  // ---------------------------------------------------------------- provisioning
-
   get provisionsCluster() {
     return !!this.spec?.provisionCluster?.enabled;
   }
 
-  /** The cluster this instance owns. Named after the instance unless it says otherwise. */
   get clusterName() {
     return this.spec?.provisionCluster?.name || this.metadata?.name;
   }
 
-  /**
-   * Where this instance deploys, as everything else should read it.
-   *
-   * An instance that provisions a cluster deploys to that one cluster and nothing else - the
-   * target picker is not offered in that case - so the two ways of choosing a target collapse
-   * into one list here rather than at every call site.
-   */
   get effectiveTargets() {
     if (this.provisionsCluster) {
       return [{ clusterName: this.clusterName }];
@@ -165,20 +151,10 @@ export default class AppInstance extends SteveModel {
     return !!this.provisionedCluster?.status?.ready;
   }
 
-  /** The namespace Rancher gives the management side of a provisioned cluster. */
   get managementClusterNamespace() {
     return this.provisionedCluster?.status?.clusterName || null;
   }
 
-  /**
-   * Whether this installation's cluster is one somebody has to bring nodes to.
-   *
-   * A cluster with no machine pools is a *custom* cluster: Rancher publishes a registration
-   * command and waits, and nothing else will ever make it Ready. One with pools is driven by a
-   * cloud credential and registers its own nodes, and the registration command Rancher still
-   * publishes for it is noise - showing it there reads as an instruction, which is how a
-   * cluster that is provisioning normally looks like a cluster that is stuck.
-   */
   get needsNodesRegistered() {
     if (!this.provisionsCluster) {
       return false;
@@ -187,15 +163,6 @@ export default class AppInstance extends SteveModel {
     return !(this.provisionedCluster?.spec?.rkeConfig?.machinePools || []).length;
   }
 
-  // ---------------------------------------------------------------- rendering
-
-  /**
-   * What this instance still owes its app: values the templates refer to, that the app has no
-   * default for, and that this instance has not supplied.
-   *
-   * Non-empty means the instance cannot be rendered at all - substitution would leave `${name}`
-   * sitting in the YAML - so it is held back rather than deployed broken.
-   */
   get missingValues() {
     return missingValues(this.app, this);
   }
@@ -212,7 +179,6 @@ export default class AppInstance extends SteveModel {
     return renderTemplates(this.app, this);
   }
 
-  /** The cluster manifest this instance would create, with values substituted. */
   get renderedClusterTemplate() {
     if (!this.provisionsCluster) {
       return '';
@@ -227,16 +193,10 @@ export default class AppInstance extends SteveModel {
     );
   }
 
-  // ---------------------------------------------------------------- state
-
   get bundleName() {
     return `${ BUNDLE_PREFIX }${ this.metadata?.name }`;
   }
 
-  /**
-   * Every Bundle this instance owns. There is one per Fleet workspace the targets fall in,
-   * because a Bundle can only reach clusters in its own workspace.
-   */
   get bundles() {
     try {
       return this.$rootGetters['management/all'](FLEET_BUNDLE)
@@ -250,20 +210,6 @@ export default class AppInstance extends SteveModel {
     return this.bundles[0] || null;
   }
 
-  /**
-   * What actually landed, per cluster.
-   *
-   * The resources an instance deploys live on the *downstream* clusters, so nothing in the
-   * local cluster lists them and the shell's own Related Resources tab - which only ever looks
-   * where the instance itself is - cannot show them. Fleet's BundleDeployment is the one
-   * record that crosses the gap: there is one per cluster the Bundle reaches, in that
-   * cluster's Fleet namespace, and it names every resource applied there.
-   */
-  /**
-   * The glance line under the title: what this is an installation of, where it went, and the
-   * Bundle carrying it. The same four facts the page used to repeat in a row of its own - the
-   * masthead already has a place for them, and it lines them up with Age and the labels.
-   */
   get details() {
     const t = this.$rootGetters['i18n/t'];
     const link = (to, content) => (to ? {
@@ -272,8 +218,15 @@ export default class AppInstance extends SteveModel {
       content,
     } : { content });
 
-    return [
+    const out = [
       { label: t('appsPlus.instance.app'), ...link(this.app?.detailLocation, this.appDisplay) },
+    ];
+
+    if (this.version) {
+      out.push({ label: t('appsPlus.instance.version'), content: this.version });
+    }
+
+    out.push(
       {
         label: t(this.provisionsCluster ? 'appsPlus.instance.ownedCluster' : 'appsPlus.instance.targets'),
         ...link(this.provisionedCluster?.detailLocation, this.targetDisplay),
@@ -286,7 +239,9 @@ export default class AppInstance extends SteveModel {
           this.bundleSummary ? `${ this.bundleName } (${ this.readyDisplay } ready)` : this.bundleName,
         ),
       },
-    ];
+    );
+
+    return out;
   }
 
   get bundleDeployments() {
@@ -298,12 +253,6 @@ export default class AppInstance extends SteveModel {
     }
   }
 
-  /**
-   * One row per deployed resource, carrying the cluster it is on.
-   *
-   * A resource Fleet is unhappy about is listed in `nonReadyStatus` with a message; everything
-   * else it applied is ready, so the two lists together are the state of the deployment.
-   */
   get deployedResources() {
     return this.bundleDeployments.flatMap((deployment) => {
       const labels = deployment.metadata?.labels || {};
@@ -322,21 +271,20 @@ export default class AppInstance extends SteveModel {
         const message = notReady[key];
 
         return {
-          key:      `${ clusterName }/${ key }`,
-          kind:     resource.kind,
-          name:     resource.name,
-          namespace: resource.namespace || '',
+          key:        `${ clusterName }/${ key }`,
+          kind:       resource.kind,
+          name:       resource.name,
+          namespace:  resource.namespace || '',
           apiVersion: resource.apiVersion || '',
           clusterName,
           clusterNamespace,
-          message:  message || '',
-          ready:    !message,
+          message:    message || '',
+          ready:      !message,
         };
       });
     });
   }
 
-  /** The Bundle summaries added up, so an instance spanning two workspaces reads as one. */
   get bundleSummary() {
     const summaries = this.bundles
       .map((bundle) => bundle.status?.summary)
@@ -363,12 +311,6 @@ export default class AppInstance extends SteveModel {
     return `${ summary.ready || 0 }/${ summary.desiredReady || 0 }`;
   }
 
-  /**
-   * Overridden because these CRDs have no controller and so never get a status Steve could
-   * derive a state from. What the row should say is what Rancher and Fleet say about the two
-   * things this instance owns - and the cluster comes first, because until it is up there is
-   * nothing for the Bundle's answer to mean.
-   */
   get state() {
     if (this.metadata?.deletionTimestamp) {
       return 'removing';
@@ -378,8 +320,6 @@ export default class AppInstance extends SteveModel {
       return 'error';
     }
 
-    // Ahead of everything else, because it is the only state a person has to act on: whatever
-    // Fleet is doing, this instance is running an older render until its values are answered.
     if (this.needsAttention) {
       return 'warning';
     }
@@ -464,15 +404,6 @@ export default class AppInstance extends SteveModel {
     return this.bundles.length ? '' : 'Waiting for the Fleet bundle to be created.';
   }
 
-  // ---------------------------------------------------------------- reconciliation
-
-  /**
-   * Save the instance, then make what it owns match it.
-   *
-   * The order matters on create: an ownerReference needs the instance's uid, which only
-   * exists once the instance has been written. The cluster goes first because the Bundle
-   * targets it - though the Bundle does not wait for it, see syncBundle.
-   */
   async save(opt) {
     const missingDeps = await this.resolveMissingDependencies();
 
@@ -489,19 +420,6 @@ export default class AppInstance extends SteveModel {
     return saved;
   }
 
-  /**
-   * Keep this object alive until what it owns has actually gone.
-   *
-   * Without it, deleting an installation removes the row the instant the request is accepted,
-   * while Kubernetes is still garbage-collecting the Bundle and - if it brought one - a cluster
-   * that takes minutes to tear down. The list said the installation was gone and the EC2
-   * instance was still running, which is the wrong way round: what somebody deleted is the
-   * installation, and it is not finished until its things are.
-   *
-   * With the finalizer, a delete sets `deletionTimestamp` and the object stays, so `state`
-   * reads `removing` and the row says Terminating - see releaseWhenEmpty for what takes it off
-   * again.
-   */
   ensureFinalizer() {
     const existing = this.metadata?.finalizers || [];
 
@@ -510,29 +428,34 @@ export default class AppInstance extends SteveModel {
     }
   }
 
-  /**
-   * Put the finalizer on at the last possible moment, and only then delete.
-   *
-   * ensureFinalizer above runs during save, which covers every installation this extension
-   * created - but not one made with kubectl, nor one that predates the finalizer existing. Such
-   * an installation is deleted the instant the request is accepted: the row goes, and the
-   * cluster it brought carries on being torn down for another ten minutes with nothing on
-   * screen to say so. That is the case this closes, because it is the case somebody hits.
-   *
-   * Patched rather than saved: this object is on its way out, and a full save would reconcile
-   * it - writing Bundles for an installation being deleted.
-   */
+  promptRemove(resources = this) {
+    const list = Array.isArray(resources) ? resources : [resources];
+    const blocked = list.find((item) => item?.dependentInstances?.length > 0);
+
+    if (blocked) {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('appsplus:blocked-delete', { detail: { instance: blocked } }));
+      }
+
+      return;
+    }
+
+    return super.promptRemove(resources);
+  }
+
   async remove(opt) {
+    if (this.dependentInstances.length > 0) {
+      const names = this.dependentInstances.map((i) => i.metadata?.name).join(', ');
+
+      throw new Error(`Cannot delete "${ this.metadata?.name }" because it is required by: ${ names }`);
+    }
+
     const existing = this.metadata?.finalizers || [];
 
     if (!existing.includes(FINALIZER)) {
       try {
-        // `add` on an object member replaces it, so this works whether or not the list is
-        // already there - which `add` to `/metadata/finalizers/-` would not.
         await this.patch([{ op: 'add', path: '/metadata/finalizers', value: [...existing, FINALIZER] }]);
       } catch (e) {
-        // Worth saying, and not worth stopping for: without the finalizer the delete still
-        // happens, it just goes back to disappearing early.
         console.warn(`apps-plus: could not hold ${ this.metadata?.name } for cleanup`, e); // eslint-disable-line no-console
       }
     }
@@ -540,23 +463,10 @@ export default class AppInstance extends SteveModel {
     return super.remove(opt);
   }
 
-  /** Whether this is on its way out and waiting for its own things to go. */
   get isTerminating() {
     return !!this.metadata?.deletionTimestamp;
   }
 
-  /**
-   * Which half of the teardown is still outstanding.
-   *
-   * Read from the store rather than by a forced lookup, because this is what the row says
-   * rather than what decides it: a stage that lags a few seconds is a label that lags a few
-   * seconds, whereas releaseWhenEmpty - which decides whether the object may actually go -
-   * still asks Rancher directly.
-   *
-   * The order is the order the teardown happens in: Kubernetes garbage-collects the Bundles
-   * and the cluster together, but the Bundles go in seconds and a cluster takes minutes, so in
-   * practice one follows the other and saying so is more use than one message for both.
-   */
   get terminatingStage() {
     if (!this.isTerminating) {
       return null;
@@ -573,13 +483,6 @@ export default class AppInstance extends SteveModel {
     return 'finishing';
   }
 
-  /**
-   * What the badge says while this is going away.
-   *
-   * `state` stays `removing` throughout so the colour and the spinner are the ones Rancher uses
-   * for anything being deleted; only the words change, because the difference between waiting
-   * on a Bundle and waiting on a cluster is the difference between seconds and minutes.
-   */
   get stateDisplay() {
     switch (this.terminatingStage) {
     case 'resources':
@@ -593,34 +496,11 @@ export default class AppInstance extends SteveModel {
     }
   }
 
-  /**
-   * Let go, once there is nothing left to wait for.
-   *
-   * This is the half a controller would normally do, and it is done here for the same reason
-   * everything else in this extension is: there is no controller behind these CRDs. The cost is
-   * that a finalizer nobody removes is an object that never goes, so this has to be reached
-   * from somewhere that runs whether or not the person who pressed Delete is still watching -
-   * the list calls it for every terminating row on every refresh, so any open Apps and
-   * Installations page finishes the job, for anybody's delete.
-   *
-   * Kubernetes has already deleted the dependents by ownerReference by the time they disappear;
-   * this only decides when the row may go, and never deletes anything itself.
-   */
   async releaseWhenEmpty() {
     if (!this.isTerminating || !(this.metadata?.finalizers || []).includes(FINALIZER)) {
       return false;
     }
 
-    // Do the deleting, not just the waiting.
-    //
-    // The finalizer that holds this object also stops Kubernetes collecting what it owns:
-    // garbage collection runs when an owner is *gone*, and a finalizer is precisely the object
-    // not being gone. Waiting for ownerReferences to do it is waiting for something that cannot
-    // start - the cluster sat there with no deletionTimestamp for as long as it was left.
-    //
-    // So the teardown is driven from here, in the order the messages promise: the resources it
-    // deployed first, because they are seconds and a cluster is minutes, and because a cluster
-    // torn down under its own workloads is the wrong way round.
     if (await this.deleteBundles()) {
       return false;
     }
@@ -633,8 +513,6 @@ export default class AppInstance extends SteveModel {
       return false;
     }
 
-    // A JSON patch, so `merge` stays false - `patch(data, opt, merge)` picks the content type
-    // from it, and a merge patch cannot take one entry out of a list anyway.
     try {
       await this.patch([{
         op:    'replace',
@@ -642,10 +520,6 @@ export default class AppInstance extends SteveModel {
         value: (this.metadata.finalizers || []).filter((f) => f !== FINALIZER),
       }]);
     } catch (e) {
-      // Losing a race with another tab doing the same thing is not a failure - the finalizer is
-      // off either way, which is all this was for - but anything else is worth saying out loud.
-      // Swallowing it silently is why a patch sent with the wrong content type looked like a
-      // row that simply never went away.
       console.warn(`apps-plus: could not release ${ this.metadata?.name }`, e); // eslint-disable-line no-console
 
       return false;
@@ -654,21 +528,6 @@ export default class AppInstance extends SteveModel {
     return true;
   }
 
-  /**
-   * Whether anything this installation owns is still standing.
-   *
-   * Asked of the cluster by id and of the Bundles by workspace, both forced, because Steve's
-   * collection cache lags a namespace by minutes - the same reason pruneBundles looks each one
-   * up rather than listing. A stale "still there" only delays the row; a stale "all gone" would
-   * drop it while the cluster was still up, which is the thing being fixed.
-   */
-  /**
-   * Remove every Bundle this installation still has, and say whether there were any.
-   *
-   * Returns true while there is anything left to wait for, so the caller can stop there and
-   * come back on the next refresh rather than tearing the cluster down underneath resources
-   * that are still on it.
-   */
   async deleteBundles() {
     let remaining = false;
 
@@ -685,8 +544,6 @@ export default class AppInstance extends SteveModel {
         try {
           await bundle.remove();
         } catch (e) {
-          // Fleet reports a Bundle it cannot remove, and the next pass tries again. Failing
-          // the whole teardown over one would strand the finalizer instead.
           console.warn(`apps-plus: could not remove bundle ${ namespace }/${ this.bundleName }`, e); // eslint-disable-line no-console
         }
       }
@@ -695,13 +552,6 @@ export default class AppInstance extends SteveModel {
     return remaining;
   }
 
-  /**
-   * Remove the cluster this installation brought, and say whether it is still there.
-   *
-   * Only ever the cluster this instance owns: findCluster looks it up by the name this instance
-   * provisions, in the one workspace it provisions into. An installation that deploys to
-   * clusters somebody else made never reaches here, because provisionsCluster is false.
-   */
   async deleteCluster() {
     if (!this.provisionsCluster) {
       return false;
@@ -738,17 +588,7 @@ export default class AppInstance extends SteveModel {
     return false;
   }
 
-  /**
-   * Make what this instance owns match it, unless it cannot be rendered.
-   *
-   * The guard is the whole point: an instance whose app asks for a value it does not have would
-   * render `${name}` into the YAML and deploy that. Far better to leave the last good render in
-   * place on the clusters and show a warning, so the deployed state is always something that
-   * was once correct.
-   *
-   * Returns whether it actually reconciled, so callers can tell "up to date" from "held back".
-   */
-  async reconcile() {
+  async reconcile(visited = new Set()) {
     const missingDeps = await this.resolveMissingDependencies();
 
     if (missingDeps.length > 0) {
@@ -759,10 +599,94 @@ export default class AppInstance extends SteveModel {
       return false;
     }
 
+    await this.ensureDependencyInstances(visited);
     await this.syncCluster();
     await this.syncBundle();
 
     return true;
+  }
+
+  async findAllOrCached(type, opt) {
+    try {
+      return await this.$dispatch('findAll', opt ? { type, opt } : { type });
+    } catch {
+      try {
+        return this.$rootGetters['management/all'](type) || [];
+      } catch {
+        return [];
+      }
+    }
+  }
+
+  async ensureDependencyInstances(visited = new Set()) {
+    const app = await this.resolveApp();
+
+    if (!app) {
+      return;
+    }
+
+    const myAppName = app.metadata?.name;
+
+    if (!myAppName || visited.has(myAppName)) {
+      return;
+    }
+
+    visited.add(myAppName);
+
+    const deps = app.dependencies || [];
+
+    if (!deps.length) {
+      return;
+    }
+
+    const allInstances = await this.findAllOrCached(APP_INSTANCE, { force: true });
+
+    for (const depAppName of deps) {
+      if (visited.has(depAppName)) {
+        continue;
+      }
+
+      const existing = allInstances.find((inst) => (
+        inst?.spec?.app === depAppName && !inst.isTerminating
+      ));
+
+      if (existing) {
+        const currentReq = new Set(
+          parseDependencyList(existing.metadata?.annotations?.[REQUIRED_BY_ANNOTATION])
+        );
+
+        if (this.metadata?.name && !currentReq.has(this.metadata.name)) {
+          currentReq.add(this.metadata.name);
+          existing.metadata.annotations = {
+            ...(existing.metadata?.annotations || {}),
+            [REQUIRED_BY_ANNOTATION]: [...currentReq].join(','),
+          };
+          try {
+            await existing.save();
+          } catch {}
+        }
+        continue;
+      }
+
+      const depInstanceName = `${ depAppName }-dep`;
+      const created = await this.$dispatch('create', {
+        type:     APP_INSTANCE,
+        metadata: {
+          name:        depInstanceName,
+          labels:      { [DEPENDENCY_INSTANCE_LABEL]: 'true' },
+          annotations: this.metadata?.name ? { [REQUIRED_BY_ANNOTATION]: this.metadata.name } : {},
+        },
+        spec: {
+          app:       depAppName,
+          namespace: this.targetNamespace,
+          targets:   this.effectiveTargets,
+        },
+      });
+
+      const savedDep = await created.save();
+
+      allInstances.push(savedDep);
+    }
   }
 
   async resolveMissingDependencies() {
@@ -778,19 +702,8 @@ export default class AppInstance extends SteveModel {
       return [];
     }
 
-    let allApps = [];
-
-    try {
-      allApps = await this.$dispatch('findAll', { type: APP });
-    } catch {
-      try {
-        allApps = this.$rootGetters['management/all'](APP) || [];
-      } catch {
-        allApps = [];
-      }
-    }
-
-    const existingNames = new Set((allApps || []).map((a) => a.metadata?.name));
+    const allApps = await this.findAllOrCached(APP);
+    const existingNames = new Set(allApps.map((a) => a.metadata?.name));
 
     return deps.filter((dep) => !existingNames.has(dep));
   }
@@ -821,28 +734,6 @@ export default class AppInstance extends SteveModel {
     }
   }
 
-  /**
-   * Create or update the cluster this instance owns.
-   *
-   * The template supplies the spec; the metadata is this extension's, because the name, the
-   * workspace and the ownerReference are what tie the cluster to the instance and are not the
-   * template's to decide.
-   *
-   * Turning provisioning off does not delete the cluster. A save is not the place to destroy
-   * one - deleting the instance is, and the ownerReference already handles that.
-   */
-  /**
-   * The cloud credential the default template provisions with.
-   *
-   * Resolved rather than configured, because its id is generated by Rancher when somebody adds
-   * a credential and no template can know it in advance. The first credential for the driver
-   * wins; a cluster that needs a particular one says so by setting `cloudCredential` as a value
-   * on the app or the installation, which overrides this.
-   *
-   * The id Rancher wants in `cloudCredentialSecretName` is the Norman one - `<namespace>:<name>`
-   * - which is what this store hands back, and is not the `<namespace>/<name>` a Steve secret
-   * would give.
-   */
   async cloudCredentialId() {
     let credentials = [];
 
@@ -859,17 +750,6 @@ export default class AppInstance extends SteveModel {
     return match?.id || '';
   }
 
-  /**
-   * Make the objects the cluster template describes match it.
-   *
-   * The template is a multi-document YAML file and every document is applied, in the order it
-   * is written. That is not generality for its own sake: a cluster Rancher can build is a
-   * machine config plus a Cluster whose pool references it by name, so one document was never
-   * enough, and ordering matters because the reference has to resolve.
-   *
-   * Each document is created with an ownerReference back to this installation, so deleting the
-   * installation takes the machine config with the cluster rather than leaving it behind.
-   */
   async syncCluster() {
     if (!this.provisionsCluster) {
       return null;
@@ -913,14 +793,6 @@ export default class AppInstance extends SteveModel {
     return cluster;
   }
 
-  /**
-   * One document from the cluster template, created or brought up to date.
-   *
-   * Everything outside `metadata` is copied across whole rather than picked field by field,
-   * because these two objects do not agree on where their configuration lives: a Cluster keeps
-   * it under `spec`, and a machine config keeps it at the top level with no spec at all. A
-   * reader that knew about `spec` would silently write an empty machine config.
-   */
   async applyClusterDocument(document) {
     const type = steveType(document);
     const name = document.metadata?.name || this.clusterName;
@@ -966,23 +838,10 @@ export default class AppInstance extends SteveModel {
     }
   }
 
-  /** The Cluster this installation owns, if it has been created. */
   findCluster() {
     return this.findClusterObject(PROVISIONING_CLUSTER, PROVISION_WORKSPACE, this.clusterName);
   }
 
-  /**
-   * Which Fleet workspace each target falls in, as workspace -> targets.
-   *
-   * A Bundle can only reach clusters in its own workspace, so an instance whose targets span
-   * two workspaces needs one Bundle in each; putting them all in the first target's workspace
-   * silently deploys to only some of them.
-   *
-   * A cluster this instance provisions needs no lookup at all: it is created in
-   * PROVISION_WORKSPACE, and at the moment the Bundle is written its Fleet Cluster object does
-   * not exist yet, so looking it up would fall back to the wrong workspace. Fleet tolerates a
-   * target that is not there yet and deploys when it registers.
-   */
   async targetsByWorkspace() {
     const out = new Map();
 
@@ -1010,29 +869,48 @@ export default class AppInstance extends SteveModel {
     return out;
   }
 
-  /** Create or update one Bundle per workspace the targets fall in, and remove any left over. */
   async syncBundle() {
     const app = await this.resolveApp();
-    const resources = renderTemplates(app, this);
+    let resources = renderTemplates(app, this);
     const byWorkspace = await this.targetsByWorkspace();
-    const helmSpec = {
-      // Adopt objects that are already there rather than refusing them.
-      takeOwnership: true,
-    };
+    const helmSpec = { takeOwnership: true };
 
     if (app?.isHelmChart) {
       const helm = app.spec?.helm || {};
-      const merged = typedOverrides(mergeValues(app, this), app?.spec?.values || {});
+      const selectedVersion = this.spec?.version || helm.version || '';
+      let baseValues = app?.spec?.values || {};
+      let chartFiles = app?.templates || [];
 
-      if (helm.repo) {
-        helmSpec.repo = helm.repo;
+      if (helm.repo && helm.chart && selectedVersion && (selectedVersion !== helm.version || !chartFiles.length)) {
+        try {
+          const details = await fetchHelmVersionDetails(helm.repo, helm.chart, selectedVersion);
+
+          if (details?.files?.length) {
+            chartFiles = details.files;
+          }
+          if (details?.values && Object.keys(details.values).length) {
+            baseValues = details.values;
+          }
+        } catch {}
       }
-      if (helm.chart) {
-        helmSpec.chart = helm.chart;
+
+      const merged = typedOverrides({ ...baseValues, ...(this.spec?.values || {}) }, baseValues);
+      const hasChartYaml = chartFiles.some((f) => f?.name === 'Chart.yaml');
+
+      if (hasChartYaml) {
+        resources = chartFiles;
+      } else {
+        if (helm.repo) {
+          helmSpec.repo = helm.repo;
+        }
+        if (helm.chart) {
+          helmSpec.chart = helm.chart;
+        }
+        if (selectedVersion) {
+          helmSpec.version = selectedVersion;
+        }
       }
-      if (helm.version) {
-        helmSpec.version = helm.version;
-      }
+
       helmSpec.releaseName = helm.releaseName || this.metadata?.name || helm.chart;
       if (Object.keys(merged).length > 0) {
         helmSpec.values = unflattenValues(merged);
@@ -1042,8 +920,6 @@ export default class AppInstance extends SteveModel {
     for (const [namespace, targets] of byWorkspace) {
       const bundleSpec = {
         targets,
-        // Fleet applies this to any rendered resource that does not name a namespace itself,
-        // which is what makes one app deployable to different namespaces per instance.
         defaultNamespace: this.targetNamespace,
         helm:             helmSpec,
       };
@@ -1084,13 +960,6 @@ export default class AppInstance extends SteveModel {
     return bundle.save();
   }
 
-  /**
-   * Every Fleet workspace a Bundle of this instance's could be sitting in.
-   *
-   * Deliberately a small fixed set plus the workspaces Fleet clusters actually live in, rather
-   * than "every namespace": prune below deletes what it finds, and a wrong answer here is a
-   * deleted Bundle somewhere it should not have looked.
-   */
   async candidateWorkspaces() {
     const found = new Set([DEFAULT_WORKSPACE, PROVISION_WORKSPACE]);
 
@@ -1102,23 +971,11 @@ export default class AppInstance extends SteveModel {
           found.add(cluster.metadata.namespace);
         }
       });
-    } catch {
-      // The fixed pair is still worth checking.
-    }
+    } catch {}
 
     return [...found];
   }
 
-  /**
-   * Remove Bundles this instance owns in workspaces it no longer targets. Retargeting an
-   * instance from a downstream cluster back to local would otherwise leave the old Bundle
-   * deploying, since nothing else ever deletes it.
-   *
-   * This looks each candidate workspace up by id rather than listing Bundles and filtering.
-   * Steve's collection cache can be minutes behind for a namespace - it will happily list a
-   * Bundle that is gone and omit one that exists - while a GET by id is accurate. Listing here
-   * meant the prune silently did nothing.
-   */
   async pruneBundles(keep) {
     const candidates = await this.candidateWorkspaces();
 
@@ -1135,10 +992,7 @@ export default class AppInstance extends SteveModel {
 
       try {
         await bundle.remove();
-      } catch {
-        // Best effort: a Bundle that cannot be removed is reported by Fleet, and failing the
-        // save over it would leave the instance itself unsaved.
-      }
+      } catch {}
     }
   }
 
@@ -1154,8 +1008,6 @@ export default class AppInstance extends SteveModel {
     }
   }
 
-  // ---------------------------------------------------------------- actions
-
   get availableActions() {
     return [
       {
@@ -1169,7 +1021,6 @@ export default class AppInstance extends SteveModel {
     ];
   }
 
-  /** Re-render and re-write what this instance owns, without changing the instance itself. */
   async redeploy() {
     try {
       const done = await this.reconcile();
@@ -1186,7 +1037,6 @@ export default class AppInstance extends SteveModel {
     }
   }
 
-  /** Deleting this takes a cluster with it, so make Rancher ask for the name to be typed. */
   get confirmRemove() {
     return this.provisionsCluster;
   }

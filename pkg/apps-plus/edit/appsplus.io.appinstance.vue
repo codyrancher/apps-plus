@@ -16,18 +16,8 @@ import { DEFAULT_CLUSTER_VALUES } from '../config/cluster-template';
 import {
   renderTemplates, missingValues, appVariables, undeclaredWarnings, isSet, BUILT_IN_VALUES
 } from '../render';
+import { fetchHelmVersionDetails } from '../helm';
 
-/**
- * Creating and editing an AppInstance: pick an app, pick clusters, override values.
- *
- * The clusters offered are Fleet's, not Rancher's management ones, because Fleet is what
- * deploys this and a Bundle target names a Fleet Cluster. On this Rancher that is `local` in
- * the fleet-local workspace; a downstream cluster registered with Fleet appears here too,
- * with no change to this page.
- *
- * Nothing here writes the Bundle. Saving the instance does, in the model - so a YAML edit or
- * an import deploys exactly as this form does.
- */
 export default {
   name:         'CruAppInstance',
   inheritAttrs: false,
@@ -48,16 +38,9 @@ export default {
   async fetch() {
     this.apps = await this.$store.dispatch('management/findAll', { type: APP });
     this.clusters = await this.$store.dispatch('management/findAll', { type: FLEET_CLUSTER });
-
-    // Both only feed the namespace suggestions, and neither is worth failing the form over: a
-    // person who cannot list namespaces can still type one, which is what taggable is for.
-    //
-    // The management store, not the cluster store. This product declares `inStore: 'management'`
-    // because it owns no cluster, so nothing has ever put a cluster in scope here and
-    // `cluster/findAll` comes back empty - which left the list holding only the namespaces
-    // other installations happened to mention.
     this.namespaces = await this.$store.dispatch('management/findAll', { type: NAMESPACE }).catch(() => []);
     this.instances = await this.$store.dispatch('management/findAll', { type: APP_INSTANCE }).catch(() => []);
+    this.ensureDefaultVersion();
   },
 
   data() {
@@ -67,8 +50,6 @@ export default {
 
     const spec = this.value.spec;
 
-    // The list's per-app "Create Instance" button arrives here with the app in the query, so
-    // the form opens already pointed at the group it was pressed in.
     if (!spec.app && this.$route.query?.[APP_QUERY]) {
       spec.app = this.$route.query[APP_QUERY];
     }
@@ -86,11 +67,24 @@ export default {
     }
 
     return {
-      apps:     [],
-      clusters: [],
-      namespaces: [],
-      instances:  [],
+      DEFAULT_TARGET_NAMESPACE,
+      apps:            [],
+      clusters:        [],
+      namespaces:      [],
+      instances:       [],
+      versionDefaults: null,
     };
+  },
+
+  watch: {
+    selectedApp() {
+      this.versionDefaults = null;
+      this.ensureDefaultVersion();
+    },
+
+    'value.spec.version'(ver) {
+      this.loadVersionDefaults(ver);
+    },
   },
 
   computed: {
@@ -101,6 +95,17 @@ export default {
       }));
     },
 
+    versionOptions() {
+      if (!this.selectedApp?.isHelmChart) {
+        return [];
+      }
+
+      return (this.selectedApp.helmVersions || []).map((v) => ({
+        label: v,
+        value: v,
+      }));
+    },
+
     clusterOptions() {
       return this.clusters.map((cluster) => ({
         label: cluster.metadata?.name,
@@ -108,17 +113,6 @@ export default {
       }));
     },
 
-    /**
-     * Namespaces to suggest for the target namespace.
-     *
-     * Two sources, because neither is complete on its own. The local cluster's own namespaces
-     * are readable from here and are the right answer whenever `local` is a target. Everything
-     * every other installation already deploys into is the rest: it is the only evidence this
-     * page has about a downstream cluster, whose namespaces a global product cannot list.
-     *
-     * Suggestions, not a constraint - the field is taggable. A namespace that does not exist
-     * yet is an ordinary thing to type here, since Fleet creates it on the way in.
-     */
     namespaceOptions() {
       const found = new Set();
 
@@ -147,8 +141,6 @@ export default {
           enabled,
         };
 
-        // An instance that brings its own cluster deploys to that one and nothing else, so the
-        // targets it may have had are cleared rather than left to disagree with the switch.
         if (enabled) {
           this.value.spec.targets = [];
         }
@@ -167,8 +159,6 @@ export default {
       },
     },
 
-    /** Two-way over spec.targets, which is a list of objects rather than the list of names
-     * a multi-select works in. */
     targetNames: {
       get() {
         return (this.value.spec.targets || []).map((target) => target.clusterName);
@@ -178,11 +168,6 @@ export default {
       },
     },
 
-    placeholderNamespace() {
-      return DEFAULT_TARGET_NAMESPACE;
-    },
-
-    /** What this instance would deploy, rendered as it will be written into the Bundle. */
     preview() {
       if (!this.selectedApp) {
         return [];
@@ -197,33 +182,21 @@ export default {
       }
 
       const helm = this.selectedApp.spec?.helm || {};
+      const baseValues = this.versionDefaults || this.selectedApp.spec?.values || {};
 
       return JSON.stringify({
         repo:        helm.repo || '',
         chart:       helm.chart || '',
-        version:     helm.version || '',
+        version:     this.value.spec.version || helm.version || '',
         releaseName: helm.releaseName || this.value.metadata?.name || helm.chart || '',
-        values:      { ...(this.selectedApp.spec?.values || {}), ...(this.values || {}) },
+        values:      { ...baseValues, ...(this.values || {}) },
       }, null, 2);
     },
 
     missingDependencies() {
-      if (!this.selectedApp) {
-        return [];
-      }
-
-      const existing = new Set(this.apps.map((a) => a.metadata?.name).filter(Boolean));
-
-      return (this.selectedApp.dependencies || []).filter((dep) => !existing.has(dep));
+      return this.selectedApp?.missingDependencies || [];
     },
 
-    /**
-     * The instance's values, edited in place.
-     *
-     * Deliberately a computed over `spec.values` rather than a data copy kept in step by a
-     * watcher: the copy is a second source of truth, and KeyValue emitting its own state back
-     * would silently overwrite anything written to the copy from elsewhere.
-     */
     values: {
       get() {
         return this.value.spec.values || {};
@@ -233,84 +206,33 @@ export default {
       },
     },
 
-    /**
-     * Of those, the ones still unanswered here. This is what the form highlights and what
-     * blocks saving: an instance saved without them could not be rendered.
-     */
     missing() {
       return missingValues(this.selectedApp, this.value);
     },
 
-    /**
-     * The keys this installation can actually override, offered as a list.
-     *
-     * The parameters the app declares - see appVariables. Without it the values editor is two
-     * free-text boxes and the only way to learn what goes in the left one is to open the app and
-     * read its YAML - and a key that is a letter out is not an error, it is a value that is
-     * silently never used.
-     *
-     * The cluster template's variables are in the list only when this installation provisions a
-     * cluster, for the same reason `missing` counts them only then: an installation deploying to
-     * clusters that already exist never renders it.
-     *
-     * The four the pair knows about itself are dropped. They are always satisfied, so overriding
-     * `instance` or `namespace` here would be shadowing something with itself.
-     */
     valueKeys() {
       if (!this.selectedApp) {
         return [];
       }
 
-      return appVariables(this.selectedApp, this.provisions)
+      const base = appVariables(this.selectedApp, this.provisions);
+      const extra = this.versionDefaults ? Object.keys(this.versionDefaults) : [];
+
+      return [...new Set([...base, ...extra])]
         .filter((name) => !BUILT_IN_VALUES.includes(name))
         .sort();
     },
 
-    /**
-     * `${...}` in the app's templates that no declared value answers, shaped for the banner.
-     *
-     * The installer cannot fix these - declaring a parameter is the definer's move - but the
-     * one thing worse than a value that cannot be set is a form saying "no values to set" one
-     * tab away from a preview full of `${maxmemory}`. So the form says what will happen: the
-     * text deploys exactly as written.
-     */
     undeclared() {
       return undeclaredWarnings(this.selectedApp);
     },
 
-    /** What the app answers a value with when this installation says nothing. */
-    /**
-     * What each value falls back to when this installation leaves it blank.
-     *
-     * An installation that provisions a cluster gets the cluster template's own defaults as
-     * well as the app's. They were always applied - syncCluster substitutes them at render
-     * time, and requiredValues has never counted them as owed - but this form did not know
-     * about them, so every one of region, zone, instanceType and the rest was drawn as
-     * `Required` with "the app has no default for this" underneath. Eight fields demanding an
-     * answer they already had.
-     *
-     * The app's own values win: an app that declares `region` has said something deliberate,
-     * and the built-in default is only there for the ones it says nothing about.
-     */
     appDefaults() {
-      const declared = this.selectedApp?.spec?.values || {};
+      const declared = this.versionDefaults || this.selectedApp?.spec?.values || {};
 
       return this.provisions ? { ...DEFAULT_CLUSTER_VALUES, ...declared } : declared;
     },
 
-
-    /**
-     * One row per thing this installation can set.
-     *
-     * A field each, rather than a key/value grid: the app has already decided which values
-     * exist, so asking somebody to pick a key from a dropdown before they can answer it is
-     * asking them to do the app's remembering. The default is the placeholder, so a row that is
-     * left alone visibly says what it is going to deploy with.
-     *
-     * Keys already overridden here that the templates no longer mention are kept and marked
-     * rather than dropped, so a value that stops being used is something somebody decides about
-     * instead of something that disappears.
-     */
     valueRows() {
       const names = new Set(this.valueKeys);
 
@@ -319,8 +241,6 @@ export default {
       return [...names].sort().map((name) => ({
         name,
         current: this.values[name] ?? '',
-        // A declared value with an empty default is a value with no default: the key exists
-        // because declaring it is what creates the parameter, not because '' answers it.
         default: isSet(this.appDefaults, name) ? this.appDefaults[name] : undefined,
         stale:   !this.valueKeys.includes(name),
       }));
@@ -329,27 +249,41 @@ export default {
     validationPassed() {
       return !!this.value.metadata?.name && !!this.value.spec.app && !this.missing.length;
     },
-
-    /** What the instance will actually deploy to, however it was chosen. */
-    effectiveTargets() {
-      if (this.provisions) {
-        return [this.clusterName || this.value.metadata?.name || ''];
-      }
-
-      return this.targetNames;
-    },
   },
 
   methods: {
-    /**
-     * Set one value, or clear it.
-     *
-     * Blank removes the key rather than storing an empty string, because the instance's values
-     * are spread over the app's when rendering - so an empty override does not mean "no
-     * override", it means "override it with nothing", and the app's default silently stops
-     * applying. Blank has to be the way back to the default, since it is the only thing the
-     * field can be emptied to.
-     */
+    ensureDefaultVersion() {
+      if (this.selectedApp?.isHelmChart && !this.value.spec.version) {
+        this.value.spec.version = this.selectedApp.helmVersion || this.selectedApp.helmVersions?.[0] || '';
+      }
+    },
+
+    async loadVersionDefaults(ver) {
+      if (!this.selectedApp?.isHelmChart || !ver) {
+        this.versionDefaults = null;
+
+        return;
+      }
+
+      if (ver === this.selectedApp.helmVersion) {
+        this.versionDefaults = null;
+
+        return;
+      }
+
+      try {
+        const details = await fetchHelmVersionDetails(
+          this.selectedApp.helmRepo,
+          this.selectedApp.helmChart,
+          ver,
+        );
+
+        this.versionDefaults = details?.values || null;
+      } catch {
+        this.versionDefaults = null;
+      }
+    },
+
     setValue(name, entered) {
       const values = { ...this.values };
 
@@ -360,10 +294,6 @@ export default {
       }
 
       this.values = values;
-    },
-
-    isMissing(name) {
-      return this.missing.includes(name);
     },
   },
 };
@@ -382,18 +312,6 @@ export default {
     @finish="save"
     @cancel="done"
   >
-    <!--
-      No description. An installation is named after what it is a deployment of and where it
-      goes, and both are on this form already; a free-text box under them was one more thing to
-      fill in that nothing reads back. The App keeps its description, because that is the thing
-      somebody else has to recognise in a list.
-    -->
-    <!--
-      What this installation is, on one row. `extra-columns` names a slot NameNsDescription
-      renders as a column of its own, which is how the app select gets to sit beside the name
-      rather than on a line by itself - and the two of them are the whole of "which app, called
-      what", so they belong together.
-    -->
     <NameNsDescription
       class="fill-row"
       :value="value"
@@ -403,11 +321,6 @@ export default {
       :extra-columns="value.spec.app ? [] : ['app']"
       :register-before-hook="registerBeforeHook"
     >
-      <!--
-        The app is chosen before this page exists - Install on an app's row brings the name in
-        the query - so the picker is only drawn for the one route that arrives without one,
-        rather than asking again for something already answered.
-      -->
       <template #app>
         <LabeledSelect
           v-model:value="value.spec.app"
@@ -420,11 +333,22 @@ export default {
       </template>
     </NameNsDescription>
 
-    <!--
-      And where it goes. A heading and a rule, because the checkbox below changes what the two
-      fields under it even are - without something to sit inside, it reads as a stray option
-      between unrelated inputs rather than as the switch for the section it governs.
-    -->
+    <div
+      v-if="selectedApp && selectedApp.isHelmChart"
+      class="row mb-20"
+    >
+      <div class="col span-6">
+        <LabeledSelect
+          v-model:value="value.spec.version"
+          data-testid="helm-version-select"
+          :mode="mode"
+          :options="versionOptions"
+          :label="t('appsPlus.instance.version')"
+          :tooltip="t('appsPlus.instance.versionHint')"
+        />
+      </div>
+    </div>
+
     <div class="section">
       <h3 class="section__title">
         {{ t('appsPlus.instance.destination') }}
@@ -438,18 +362,6 @@ export default {
         :tooltip="t('appsPlus.instance.provisionHint')"
       />
 
-      <!--
-        The left column is what changes: a cluster to make, or clusters that already exist. The
-        namespace is the same question either way - which namespace on the far side does this
-        deploy into - so it is rendered once and stays put rather than appearing twice.
-
-        Cluster before namespace, because what the namespace field offers depends on it: a
-        namespace is a namespace *on a cluster*, and asking for one first is asking somebody to
-        remember. `taggable` because the list can only ever be a suggestion - a namespace Fleet
-        is about to create does not exist yet, which is always the case for a cluster this is
-        about to provision, and only the local cluster's namespaces can be read from a global
-        product at all.
-      -->
       <div class="row">
         <div class="col span-6">
           <LabeledInput
@@ -479,7 +391,7 @@ export default {
             :searchable="true"
             :label="t('appsPlus.instance.namespace')"
             :tooltip="t('appsPlus.instance.namespaceHint')"
-            :placeholder="placeholderNamespace"
+            :placeholder="DEFAULT_TARGET_NAMESPACE"
           />
         </div>
       </div>
@@ -509,8 +421,6 @@ export default {
       :label="t('appsPlus.instance.noTargets')"
     />
 
-    <!-- The gap is the tabs' own, not a banner's: with every warning satisfied the rail was
-         riding the section border above it. -->
     <Tabbed
       :side-tabs="true"
       class="instance-tabs"
@@ -540,8 +450,6 @@ export default {
               {{ t('appsPlus.values.undeclaredDeclareEdit', { app: selectedApp.nameDisplay }) }}
             </router-link>
           </Banner>
-          <!-- "No values to set" only when nothing undeclared lurks in the templates: saying
-               it beside the warning above would be the form contradicting itself. -->
           <Banner
             v-if="!valueRows.length && !undeclared.length"
             color="info"
@@ -554,10 +462,6 @@ export default {
           />
         </template>
 
-        <!--
-          One field per value, in the order the app names them, with the app's default as the
-          placeholder. A row nobody touches deploys with what the placeholder says.
-        -->
         <div class="values">
           <div
             v-for="row in valueRows"
@@ -639,31 +543,11 @@ export default {
 </template>
 
 <style lang="scss" scoped>
-/**
- * Name and App as two real halves.
- *
- * NameNsDescription sizes its columns from `cols = 2 + description + extraColumns`, where the 2
- * is "name and namespace" counted together whether or not `namespaced` is false. This form is
- * not namespaced and has one extra column, so it renders two fields and reserves width for
- * three. The arithmetic is right for every other caller; the override is here.
- *
- * Flex shares, not `width: 50%`: the shell's `.col` carries a gutter margin, so two hard halves
- * total more than the row and the page grows a horizontal scrollbar. Growing into what is left
- * after the gutter cannot overflow.
- */
 :deep(.fill-row) > .col {
   flex:  1 1 0;
   width: auto;
 }
 
-/**
- * Where the installation goes.
- *
- * A rule and a heading rather than a box: the fields inside are the same fields as above and
- * should look it. What the grouping buys is that the checkbox has something to govern - it
- * swaps the two inputs underneath, and on a flat form that swap looks like the page changing
- * its mind.
- */
 .instance-tabs {
   margin-top: 20px;
 }
@@ -685,8 +569,6 @@ export default {
   gap:                   16px;
   margin-top:            10px;
 
-  // Under the field rather than in a tooltip: what the app defaults a value to is the answer to
-  // "what happens if I leave this alone", and that is the question every row raises.
   &__note {
     margin:    4px 0 0;
     font-size: 12px;

@@ -1,10 +1,5 @@
 import jsyaml from 'js-yaml';
-import {
-  DEPENDENCIES_ANNOTATION,
-  DEPENDS_ON_ANNOTATION,
-  DEPENDS_ON_LABEL_PREFIX,
-  parseDependencyList,
-} from './config/types';
+import { extractMetadataDependencies } from './config/types';
 import { flattenValues } from './render';
 import { serviceUrl } from './service';
 
@@ -30,10 +25,13 @@ export interface HelmChartEntry {
   versions: HelmChartVersion[];
 }
 
-/**
- * Fetch a remote URL as text or ArrayBuffer, trying direct browser fetch first
- * and falling back to the in-cluster apps-plus-api proxy when CORS blocks direct access.
- */
+export interface HelmChartDetails {
+  values: Record<string, unknown>;
+  implicitDependencies: string[];
+  annotations: Record<string, string>;
+  files: Array<{ name: string; content: string }>;
+}
+
 async function fetchRemote(url: string, binary = false): Promise<any> {
   try {
     const res = await fetch(url);
@@ -41,9 +39,7 @@ async function fetchRemote(url: string, binary = false): Promise<any> {
     if (res.ok) {
       return binary ? await res.arrayBuffer() : await res.text();
     }
-  } catch {
-    // Fall back to apps-plus-api proxy below.
-  }
+  } catch {}
 
   let res: Response | null = null;
 
@@ -77,13 +73,9 @@ async function fetchRemote(url: string, binary = false): Promise<any> {
     return bytes.buffer;
   }
 
-  return payload?.data || '';
+  return payload?.data ?? payload?.text ?? '';
 }
 
-/**
- * Parse a Helm repository index (either already-parsed JSON from Rancher's ClusterRepo
- * `?link=index` endpoint or raw YAML text from `index.yaml`).
- */
 export function parseHelmIndex(raw: any): HelmChartEntry[] {
   const index = typeof raw === 'string' ? (jsyaml.load(raw) as any) : raw;
   const entries = index?.entries || {};
@@ -111,27 +103,7 @@ export function parseHelmIndex(raw: any): HelmChartEntry[] {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/**
- * Load all charts from either a Rancher ClusterRepo or a Helm repository URL.
- */
-export async function fetchHelmRepoIndex(opts: { clusterRepo?: string; repoUrl?: string }): Promise<HelmChartEntry[]> {
-  if (opts.clusterRepo) {
-    try {
-      const res = await fetch(`/v1/catalog.cattle.io.clusterrepos/${ encodeURIComponent(opts.clusterRepo) }?link=index`, {
-        headers:     { accept: 'application/json' },
-        credentials: 'same-origin',
-      });
-
-      if (res.ok) {
-        const json = await res.json();
-
-        return parseHelmIndex(json);
-      }
-    } catch {
-      // Fall through to repoUrl if available.
-    }
-  }
-
+export async function fetchHelmRepoIndex(opts: { repoUrl?: string }): Promise<HelmChartEntry[]> {
   if (!opts.repoUrl) {
     throw new Error('Specify a Helm repository URL.');
   }
@@ -143,43 +115,12 @@ export async function fetchHelmRepoIndex(opts: { clusterRepo?: string; repoUrl?:
   return parseHelmIndex(yamlText);
 }
 
-/**
- * Extract implicit dependency App names declared on a Helm chart version via:
- * - annotations['appsplus.io/dependencies'] or annotations['appsplus.io/depends-on']
- * - annotations or labels prefixed with 'depends-on.appsplus.io/'
- * - Chart.yaml `dependencies` entries
- */
 export function extractChartImplicitDependencies(versionEntry?: HelmChartVersion | null): string[] {
   if (!versionEntry) {
     return [];
   }
 
-  const found = new Set<string>();
-  const annotations = versionEntry.annotations || {};
-  const labels = versionEntry.labels || {};
-
-  parseDependencyList(annotations[DEPENDENCIES_ANNOTATION]).forEach((d) => found.add(d));
-  parseDependencyList(annotations[DEPENDS_ON_ANNOTATION]).forEach((d) => found.add(d));
-
-  Object.entries(annotations).forEach(([key, val]) => {
-    if (key.startsWith(DEPENDS_ON_LABEL_PREFIX) && val !== 'false' && val !== '0') {
-      const dep = key.slice(DEPENDS_ON_LABEL_PREFIX.length).trim();
-
-      if (dep) {
-        found.add(dep);
-      }
-    }
-  });
-
-  Object.entries(labels).forEach(([key, val]) => {
-    if (key.startsWith(DEPENDS_ON_LABEL_PREFIX) && val !== 'false' && val !== '0') {
-      const dep = key.slice(DEPENDS_ON_LABEL_PREFIX.length).trim();
-
-      if (dep) {
-        found.add(dep);
-      }
-    }
-  });
+  const found = new Set<string>(extractMetadataDependencies(versionEntry));
 
   (versionEntry.dependencies || []).forEach((dep) => {
     if (dep?.name) {
@@ -190,43 +131,55 @@ export function extractChartImplicitDependencies(versionEntry?: HelmChartVersion
   return [...found];
 }
 
-/**
- * Extract files (`values.yaml`, `Chart.yaml`) from a `.tgz` Helm chart archive in the browser.
- */
-async function extractChartArchive(buffer: ArrayBuffer): Promise<{ valuesYaml?: string; chartYaml?: string }> {
+async function extractChartArchive(buffer: ArrayBuffer): Promise<{
+  valuesYaml?: string;
+  chartYaml?: string;
+  files: Array<{ name: string; content: string }>;
+}> {
   if (typeof DecompressionStream === 'undefined') {
-    return {};
+    return { files: [] };
   }
 
   const ds = new DecompressionStream('gzip');
   const stream = new Blob([buffer]).stream().pipeThrough(ds);
   const decompressed = new Uint8Array(await new Response(stream).arrayBuffer());
   const decoder = new TextDecoder();
-  const out: { valuesYaml?: string; chartYaml?: string } = {};
+  const out: {
+    valuesYaml?: string;
+    chartYaml?: string;
+    files: Array<{ name: string; content: string }>;
+  } = { files: [] };
 
   let offset = 0;
 
   while (offset + 512 <= decompressed.length) {
     const header = decompressed.subarray(offset, offset + 512);
-    // Empty block marks end of archive
+
     if (header.every((b) => b === 0)) {
       break;
     }
 
     const nameRaw = decoder.decode(header.subarray(0, 100)).replace(/\0.*$/, '');
+    const typeFlag = header[156];
     const sizeOctal = decoder.decode(header.subarray(124, 136)).replace(/\0.*$/, '').trim();
     const size = parseInt(sizeOctal, 8) || 0;
     const contentStart = offset + 512;
     const contentEnd = contentStart + size;
 
-    if (size > 0 && contentEnd <= decompressed.length) {
-      // Match top-level <chart>/values.yaml and <chart>/Chart.yaml (not subcharts)
+    if (size > 0 && contentEnd <= decompressed.length && (typeFlag === 0 || typeFlag === 48)) {
       const parts = nameRaw.split('/').filter(Boolean);
 
-      if (parts.length === 2 && parts[1] === 'values.yaml') {
-        out.valuesYaml = decoder.decode(decompressed.subarray(contentStart, contentEnd));
-      } else if (parts.length === 2 && parts[1] === 'Chart.yaml') {
-        out.chartYaml = decoder.decode(decompressed.subarray(contentStart, contentEnd));
+      if (parts.length >= 2) {
+        const relPath = parts.slice(1).join('/');
+        const text = decoder.decode(decompressed.subarray(contentStart, contentEnd));
+
+        if (parts.length === 2 && parts[1] === 'values.yaml') {
+          out.valuesYaml = text;
+        } else if (parts.length === 2 && parts[1] === 'Chart.yaml') {
+          out.chartYaml = text;
+        }
+
+        out.files.push({ name: relPath, content: text });
       }
     }
 
@@ -236,61 +189,26 @@ async function extractChartArchive(buffer: ArrayBuffer): Promise<{ valuesYaml?: 
   return out;
 }
 
-/**
- * Fetch default values and any additional metadata from a chart version.
- */
 export async function fetchHelmChartDetails(opts: {
-  clusterRepo?: string;
   repoUrl?: string;
   chartName: string;
   versionEntry: HelmChartVersion;
-}): Promise<{ values: Record<string, unknown>; implicitDependencies: string[]; annotations: Record<string, string> }> {
+}): Promise<HelmChartDetails> {
   const annotations: Record<string, string> = { ...(opts.versionEntry?.annotations || {}) };
   const implicitDeps = new Set<string>(extractChartImplicitDependencies(opts.versionEntry));
   let valuesObj: Record<string, any> = {};
+  let files: Array<{ name: string; content: string }> = [];
 
-  if (opts.clusterRepo) {
-    try {
-      const url = `/v1/catalog.cattle.io.clusterrepos/${ encodeURIComponent(opts.clusterRepo) }?link=info&chartName=${ encodeURIComponent(opts.chartName) }&version=${ encodeURIComponent(opts.versionEntry.version) }`;
-      const res = await fetch(url, {
-        headers:     { accept: 'application/json' },
-        credentials: 'same-origin',
-      });
-
-      if (res.ok) {
-        const info = await res.json();
-
-        if (info?.values && typeof info.values === 'object') {
-          valuesObj = info.values;
-        }
-        const chartAnnotations = info?.chart?.annotations || {};
-
-        Object.assign(annotations, chartAnnotations);
-        extractChartImplicitDependencies({
-          ...opts.versionEntry,
-          annotations,
-          dependencies: info?.chart?.dependencies || opts.versionEntry.dependencies,
-        }).forEach((d) => implicitDeps.add(d));
-
-        return {
-          values:               flattenValues(valuesObj),
-          implicitDependencies: [...implicitDeps],
-          annotations,
-        };
-      }
-    } catch {
-      // Fall back to archive extraction below.
-    }
-  }
-
-  const rawUrl = opts.versionEntry?.urls?.[0];
+  const base = (opts.repoUrl || '').trim().replace(/\/+$/, '').replace(/\/index\.yaml$/, '');
+  const rawUrl = opts.versionEntry?.urls?.[0] || (base ? `${ base }/${ opts.chartName }-${ opts.versionEntry.version }.tgz` : '');
 
   if (rawUrl) {
     try {
-      const base = (opts.repoUrl || '').trim().replace(/\/+$/, '').replace(/\/index\.yaml$/, '');
       const archiveUrl = /^https?:\/\//i.test(rawUrl) ? rawUrl : `${ base }/${ rawUrl.replace(/^\/+/, '') }`;
       const buffer = await fetchRemote(archiveUrl, true);
       const extracted = await extractChartArchive(buffer);
+
+      files = extracted.files || [];
 
       if (extracted.valuesYaml) {
         const parsed = jsyaml.load(extracted.valuesYaml);
@@ -313,14 +231,36 @@ export async function fetchHelmChartDetails(opts: {
           }).forEach((d) => implicitDeps.add(d));
         }
       }
-    } catch {
-      // Values extraction from archive is best-effort; chart can still be imported with empty default values.
-    }
+    } catch {}
   }
 
   return {
     values:               flattenValues(valuesObj),
     implicitDependencies: [...implicitDeps],
     annotations,
+    files,
   };
+}
+
+export async function fetchHelmVersionDetails(repoUrl: string, chartName: string, version: string): Promise<HelmChartDetails> {
+  let versionEntry: HelmChartVersion = {
+    version,
+    urls: [`${ repoUrl.trim().replace(/\/+$/, '') }/${ chartName }-${ version }.tgz`],
+  };
+
+  try {
+    const charts = await fetchHelmRepoIndex({ repoUrl });
+    const chart = charts.find((c) => c.name === chartName);
+    const matched = chart?.versions.find((v) => v.version === version);
+
+    if (matched) {
+      versionEntry = matched;
+    }
+  } catch {}
+
+  return fetchHelmChartDetails({
+    repoUrl,
+    chartName,
+    versionEntry,
+  });
 }

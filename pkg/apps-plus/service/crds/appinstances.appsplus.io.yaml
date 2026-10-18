@@ -40,6 +40,9 @@ spec:
                 app:
                   description: Name of the App this is an instance of.
                   type: string
+                version:
+                  description: Helm chart version selected for this installation.
+                  type: string
                 namespace:
                   description: Namespace the rendered resources land in on each target.
                   type: string

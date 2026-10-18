@@ -1,12 +1,3 @@
-# The two types this extension is a UI over.
-#
-# They are applied to the cluster once, out of band - an extension is UI and does not install
-# its own CRDs on every page load. Apply with:
-#
-#   kubectl apply -f crds.yaml
-#
-# Neither has a controller. An AppInstance is turned into a Fleet Bundle by the model when it
-# is saved (models/appsplus.io.appinstance.js), and Fleet's controllers do the rest.
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -84,6 +75,7 @@ spec:
                   description: >-
                     Helm chart source for this app. When set, installations deploy this chart
                     via Fleet's Bundle spec.helm.
+                  x-kubernetes-preserve-unknown-fields: true
                   properties:
                     repo:
                       type: string
@@ -91,6 +83,10 @@ spec:
                       type: string
                     version:
                       type: string
+                    versions:
+                      type: array
+                      items:
+                        type: string
                     releaseName:
                       type: string
                     clusterRepo:
@@ -149,6 +145,9 @@ spec:
                 app:
                   type: string
                   description: Name of the App this is an instance of.
+                version:
+                  type: string
+                  description: Helm chart version selected for this installation.
                 namespace:
                   type: string
                   description: Namespace the rendered resources land in on each target.

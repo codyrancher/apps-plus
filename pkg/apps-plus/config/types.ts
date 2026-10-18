@@ -1,37 +1,10 @@
-// Every name this extension shares between its product, its routes and its models.
-//
-// Two of them are Steve type ids rather than Kubernetes ones: Steve names a type
-// `<group>.<kind lowercased>`, so the CRD `apps.appsplus.io` is `appsplus.io.app` here.
-
-/**
- * The product these pages live under, which is Rancher's own Fleet - Continuous Delivery in the
- * side menu - rather than a product of this extension's own.
- *
- * It belongs there: an App is a definition and an Installation is one deployment of it by
- * Fleet, so the list sits beside the Git Repos and Helm Ops that are the other two ways to have
- * Fleet deploy something. Fleet's product declares `extendable: true` for exactly this.
- *
- * Everything else follows from this constant: the models build their route locations from it,
- * so the pages move with it and nothing else needed changing.
- */
 export const PRODUCT_NAME = 'fleet';
-
-// A product with no cluster of its own still needs a `:cluster` param. `_` is the shell's
-// placeholder for "none", exported as BLANK_CLUSTER from @shell/store/store-types.
 export const BLANK_CLUSTER = '_';
 
 export const APP = 'appsplus.io.app';
 export const APP_INSTANCE = 'appsplus.io.appinstance';
-
 export const CRD = 'apiextensions.k8s.io.customresourcedefinition';
 
-/**
- * The Steve type id for a Kubernetes manifest, by the same rule as the ids above.
- *
- * Steve names a type `<group>.<kind lowercased>`, so `rke-machine-config.cattle.io/v1` +
- * `Amazonec2Config` is `rke-machine-config.cattle.io.amazonec2config`. A core-group manifest
- * (`apiVersion: v1`) has no group and is just its kind.
- */
 export function steveType(manifest: { apiVersion?: string; kind?: string }): string {
   const kind = (manifest?.kind || '').toLowerCase();
   const group = (manifest?.apiVersion || '').split('/')[0];
@@ -39,57 +12,31 @@ export function steveType(manifest: { apiVersion?: string; kind?: string }): str
   return group && group !== 'v1' ? `${ group }.${ kind }` : kind;
 }
 
-// Fleet is what actually deploys an instance. An App Instance renders its App's templates
-// into a Bundle, and Fleet's agent on each target cluster applies it and reports back.
 export const FLEET_BUNDLE = 'fleet.cattle.io.bundle';
 export const FLEET_CLUSTER = 'fleet.cattle.io.cluster';
-
-// One BundleDeployment per cluster a Bundle reaches, living in that cluster's own Fleet
-// namespace. It is the only place that says what actually landed on a downstream cluster and
-// how it is doing - the Bundle above it only aggregates counts.
 export const FLEET_BUNDLE_DEPLOYMENT = 'fleet.cattle.io.bundledeployment';
 
-// The Bundle an instance owns is named after it, so the pair can be found from either side
-// without a label selector.
 export const BUNDLE_PREFIX = 'apps-plus-';
-
-// The Fleet workspace to fall back to when the target cluster cannot be resolved to one.
-// fleet-local is the workspace holding the Rancher-local cluster.
 export const DEFAULT_WORKSPACE = 'fleet-local';
 
-// Rancher's own cluster API, and the workspace a cluster this extension provisions is created
-// in. A provisioning.cattle.io Cluster's namespace *is* its Fleet workspace, which is what lets
-// an instance write its Bundle before the cluster exists: the workspace is known up front
-// rather than looked up from a Fleet Cluster object that has not been created yet.
 export const PROVISIONING_CLUSTER = 'provisioning.cattle.io.cluster';
 export const PROVISION_WORKSPACE = 'fleet-default';
 
-// Where the registration command for a custom cluster lives. Rancher puts one of these in the
-// management cluster's own namespace, which is the provisioning cluster's status.clusterName.
 export const REGISTRATION_TOKEN = 'management.cattle.io.clusterregistrationtoken';
-
 export const DEFAULT_TARGET_NAMESPACE = 'default';
 
-// The shell's generic resource routes. A product page reaches them with its own product name
-// in the params, so none of these are registered by this extension.
 export const LIST_ROUTE = 'c-cluster-product-resource';
 export const CREATE_ROUTE = 'c-cluster-product-resource-create';
 export const DETAIL_ROUTE = 'c-cluster-product-resource-id';
 
-// Which App a "Create Instance" button was pressed on, carried to the create form.
 export const APP_QUERY = 'app';
 
-// Rancher's Helm chart repositories.
-export const CATALOG_CLUSTER_REPO = 'catalog.cattle.io.clusterrepo';
-
-// Annotations and label prefixes used by charts and apps to declare implicit dependencies.
 export const DEPENDENCIES_ANNOTATION = 'appsplus.io/dependencies';
 export const DEPENDS_ON_ANNOTATION = 'appsplus.io/depends-on';
 export const DEPENDS_ON_LABEL_PREFIX = 'depends-on.appsplus.io/';
+export const DEPENDENCY_INSTANCE_LABEL = 'appsplus.io/dependency';
+export const REQUIRED_BY_ANNOTATION = 'appsplus.io/required-by';
 
-/**
- * Parse a comma/whitespace-separated or JSON array string of dependency App names.
- */
 export function parseDependencyList(raw?: string | null): string[] {
   if (!raw || typeof raw !== 'string') {
     return [];
@@ -108,15 +55,116 @@ export function parseDependencyList(raw?: string | null): string[] {
       if (Array.isArray(parsed)) {
         return parsed.map((d) => String(d || '').trim()).filter(Boolean);
       }
-    } catch {
-      // Fall back to comma/whitespace splitting.
-    }
+    } catch {}
   }
 
   return trimmed
-    .split(/[,\s]+/)
+    .split(/[,;\s]+/)
     .map((d) => d.trim())
     .filter(Boolean);
 }
 
+export function extractMetadataDependencies(metadata?: {
+  annotations?: Record<string, string>;
+  labels?: Record<string, string>;
+  name?: string;
+} | null): string[] {
+  if (!metadata) {
+    return [];
+  }
 
+  const found = new Set<string>();
+  const annotations = metadata.annotations || {};
+  const labels = metadata.labels || {};
+
+  [
+    annotations[DEPENDENCIES_ANNOTATION],
+    annotations[DEPENDS_ON_ANNOTATION],
+    labels[DEPENDENCIES_ANNOTATION],
+    labels[DEPENDS_ON_ANNOTATION],
+  ].forEach((val) => {
+    parseDependencyList(val).forEach((d) => found.add(d));
+  });
+
+  Object.entries({ ...labels, ...annotations }).forEach(([key, val]) => {
+    if (key.startsWith(DEPENDS_ON_LABEL_PREFIX) && val !== 'false' && val !== '0') {
+      const dep = key.slice(DEPENDS_ON_LABEL_PREFIX.length).trim();
+
+      if (dep) {
+        found.add(dep);
+      }
+    }
+  });
+
+  if (metadata.name) {
+    found.delete(metadata.name);
+  }
+
+  return [...found];
+}
+
+export const RELATED_HEADERS = [
+  {
+    name:     'state',
+    labelKey: 'appsPlus.related.state',
+    value:    'stateLabel',
+    width:    120,
+  },
+  {
+    name:     'kind',
+    labelKey: 'appsPlus.related.kind',
+    value:    'kind',
+    width:    210,
+  },
+  {
+    name:     'name',
+    labelKey: 'appsPlus.related.name',
+    value:    'name',
+  },
+  {
+    name:     'namespace',
+    labelKey: 'appsPlus.related.namespace',
+    value:    'namespace',
+    width:    150,
+  },
+  {
+    name:     'role',
+    labelKey: 'appsPlus.related.role',
+    value:    'role',
+  },
+];
+
+export function crdRelatedRows(t: (key: string) => string) {
+  const crdLink = (crdName: string) => ({
+    name:   DETAIL_ROUTE,
+    params: {
+      cluster:  'local',
+      product:  'explorer',
+      resource: CRD,
+      id:       crdName,
+    },
+  });
+
+  return [
+    {
+      key:        'crd-apps',
+      stateColor: 'bg-success',
+      stateLabel: 'Active',
+      kind:       'CustomResourceDefinition',
+      name:       'apps.appsplus.io',
+      namespace:  '—',
+      to:         crdLink('apps.appsplus.io'),
+      role:       t('appsPlus.related.crdAppsRole'),
+    },
+    {
+      key:        'crd-appinstances',
+      stateColor: 'bg-success',
+      stateLabel: 'Active',
+      kind:       'CustomResourceDefinition',
+      name:       'appinstances.appsplus.io',
+      namespace:  '—',
+      to:         crdLink('appinstances.appsplus.io'),
+      role:       t('appsPlus.related.crdAppInstancesRole'),
+    },
+  ];
+}

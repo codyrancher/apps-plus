@@ -5,8 +5,6 @@ import NameNsDescription from '@shell/components/form/NameNsDescription';
 import LabeledSelect from '@shell/components/form/LabeledSelect';
 import { LabeledInput } from '@components/Form/LabeledInput';
 import ValuesEditor from '../components/ValuesEditor';
-import ImportResourceModal from '../components/ImportResourceModal';
-import ImportHelmChartModal from '../components/ImportHelmChartModal';
 import YamlEditor from '@shell/components/YamlEditor';
 import Tabbed from '@shell/components/Tabbed';
 import Tab from '@shell/components/Tabbed/Tab';
@@ -19,6 +17,7 @@ import {
   DEPENDS_ON_ANNOTATION,
   DEPENDS_ON_LABEL_PREFIX,
   parseDependencyList,
+  extractMetadataDependencies,
 } from '../config/types';
 import {
   requiredValues, appVariables, undeclaredWarnings, referencedVariables, DOCUMENTED_VALUES, BUILT_IN_VALUES
@@ -26,13 +25,6 @@ import {
 
 const NEW_TEMPLATE = () => ({ name: 'resource.yaml', content: '' });
 
-/**
- * Creating and editing an App: the chart half of this extension.
- *
- * An app is its templates (or Helm chart reference), its dependencies, and the values it
- * renders with. `spec` is initialised here rather than defaulted in the CRD, because a create
- * form starts from an empty resource and every field below binds straight into it.
- */
 export default {
   name:         'CruApp',
   inheritAttrs: false,
@@ -43,8 +35,6 @@ export default {
     LabeledSelect,
     LabeledInput,
     ValuesEditor,
-    ImportResourceModal,
-    ImportHelmChartModal,
     YamlEditor,
     Tabbed,
     Tab,
@@ -77,16 +67,10 @@ export default {
       spec.dependencies = [];
     }
 
-    if (!spec.helm) {
-      spec.helm = {};
-    }
-
     return {
       selected:           0,
       clusterTemplateKey: 0,
       templatesKey:       0,
-      importing:          false,
-      importingHelm:      false,
       newDependency:      '',
     };
   },
@@ -105,18 +89,7 @@ export default {
     },
 
     implicitDependencies() {
-      const annotations = this.value.metadata?.annotations || {};
-      const labels = this.value.metadata?.labels || {};
-      const fromAnnotations = [
-        ...parseDependencyList(annotations[DEPENDENCIES_ANNOTATION]),
-        ...parseDependencyList(annotations[DEPENDS_ON_ANNOTATION]),
-      ];
-      const fromLabels = Object.entries(labels)
-        .filter(([k, v]) => k.startsWith(DEPENDS_ON_LABEL_PREFIX) && v !== 'false' && v !== '0')
-        .map(([k]) => k.slice(DEPENDS_ON_LABEL_PREFIX.length).trim())
-        .filter(Boolean);
-
-      return [...new Set([...fromAnnotations, ...fromLabels])];
+      return extractMetadataDependencies(this.value.metadata);
     },
 
     allDependencies() {
@@ -146,15 +119,10 @@ export default {
         }));
     },
 
-    /** The variables every template gets for free. See DOCUMENTED_VALUES for what is left out. */
     documentedValues() {
       return DOCUMENTED_VALUES;
     },
 
-    /**
-     * The keys the values editor offers: the parameters this app declares (see appVariables),
-     * plus every `${...}` its templates mention that nothing declared.
-     */
     valueKeys() {
       const found = new Set(appVariables(this.value, true));
 
@@ -167,7 +135,6 @@ export default {
         .sort();
     },
 
-    /** See the note in edit/appsplus.io.appinstance.vue: one source of truth, not a copy. */
     values: {
       get() {
         return this.value.spec.values || {};
@@ -179,11 +146,6 @@ export default {
 
     templates() {
       return this.value.spec.templates;
-    },
-
-    /** What an import has to avoid reusing. See ImportResourceModal's takenValues. */
-    valueNames() {
-      return Object.keys(this.values || {});
     },
 
     current() {
@@ -207,41 +169,6 @@ export default {
     addTemplate() {
       this.templates.push(NEW_TEMPLATE());
       this.selected = this.templates.length - 1;
-    },
-
-    addImported(imported) {
-      const taken = new Set(this.templates.map((template) => template.name));
-      let name = imported.name;
-
-      for (let i = 2; taken.has(name); i++) {
-        name = imported.name.replace(/\.yaml$/, `-${ i }.yaml`);
-      }
-
-      this.templates.push({ name, content: imported.content });
-      this.selected = this.templates.length - 1;
-
-      this.values = { ...imported.values, ...this.values };
-    },
-
-    addImportedHelm(imported) {
-      if (!this.value.metadata.name && imported.name) {
-        this.value.metadata.name = imported.name;
-      }
-      if (!this.value.spec.description && imported.description) {
-        this.value.spec.description = imported.description;
-      }
-
-      this.value.spec.helm = { ...(imported.helm || {}) };
-      this.values = { ...(imported.values || {}), ...this.values };
-
-      if (!this.value.metadata.annotations) {
-        this.value.metadata.annotations = {};
-      }
-      Object.assign(this.value.metadata.annotations, imported.annotations || {});
-    },
-
-    clearHelmChart() {
-      this.value.spec.helm = {};
     },
 
     addDependency() {
@@ -268,27 +195,27 @@ export default {
         this.value.spec.dependencies = this.value.spec.dependencies.filter((d) => d !== name);
       }
 
-      const annotations = this.value.metadata?.annotations;
+      [this.value.metadata?.annotations, this.value.metadata?.labels].forEach((bag) => {
+        if (!bag) {
+          return;
+        }
 
-      if (annotations) {
         [DEPENDENCIES_ANNOTATION, DEPENDS_ON_ANNOTATION].forEach((key) => {
-          if (annotations[key]) {
-            const remaining = parseDependencyList(annotations[key]).filter((d) => d !== name);
+          if (bag[key]) {
+            const remaining = parseDependencyList(bag[key]).filter((d) => d !== name);
 
             if (remaining.length) {
-              annotations[key] = remaining.join(',');
+              bag[key] = remaining.join(',');
             } else {
-              delete annotations[key];
+              delete bag[key];
             }
           }
         });
-      }
 
-      const labels = this.value.metadata?.labels;
-
-      if (labels && labels[`${ DEPENDS_ON_LABEL_PREFIX }${ name }`]) {
-        delete labels[`${ DEPENDS_ON_LABEL_PREFIX }${ name }`];
-      }
+        if (bag[`${ DEPENDS_ON_LABEL_PREFIX }${ name }`]) {
+          delete bag[`${ DEPENDS_ON_LABEL_PREFIX }${ name }`];
+        }
+      });
     },
 
     removeTemplate(index) {
@@ -345,7 +272,7 @@ export default {
       <Tab
         name="values"
         :label="t('appsPlus.app.values')"
-        :weight="4"
+        :weight="3"
         :error="!!undeclared.length"
       >
         <Banner
@@ -368,9 +295,10 @@ export default {
       </Tab>
 
       <Tab
+        v-if="!value.isHelmChart"
         name="templates"
         :label="t('appsPlus.app.templates')"
-        :weight="3"
+        :weight="2"
       >
         <div class="template-editor">
           <div class="file-list">
@@ -393,18 +321,12 @@ export default {
               v-if="!isView"
               class="file-list__buttons"
             >
-              <rc-button
+              <RcButton
                 variant="tertiary"
                 @click="addTemplate"
               >
                 {{ t('appsPlus.app.addTemplate') }}
-              </rc-button>
-              <rc-button
-                variant="tertiary"
-                @click="importing = true"
-              >
-                {{ t('appsPlus.app.importTemplate') }}
-              </rc-button>
+              </RcButton>
             </div>
           </div>
 
@@ -451,76 +373,37 @@ export default {
       </Tab>
 
       <Tab
-        name="helm"
-        :label="t('appsPlus.app.helmChart')"
-        :weight="2"
+        v-if="!value.isHelmChart"
+        name="cluster"
+        :label="t('appsPlus.app.clusterTemplate')"
+        :weight="1"
       >
         <Banner
           color="info"
-          :label="t('appsPlus.helm.tabHint')"
+          :label="t('appsPlus.app.clusterTemplateHint')"
         />
-
-        <div
-          v-if="!isView"
-          class="mb-20"
+        <YamlEditor
+          :key="`cluster-template-${ clusterTemplateKey }`"
+          :value="value.spec.clusterTemplate || ''"
+          :mode="mode"
+          :hide-preview-buttons="true"
+          class="yaml"
+          @update:value="v => value.spec.clusterTemplate = v"
+        />
+        <RcButton
+          v-if="!isView && !value.spec.clusterTemplate"
+          variant="secondary"
+          class="mt-10"
+          @click="useDefaultClusterTemplate"
         >
-          <RcButton
-            variant="secondary"
-            class="mr-10"
-            data-testid="app-edit-import-helm-btn"
-            @click="importingHelm = true"
-          >
-            {{ t('appsPlus.helm.importButton') }}
-          </RcButton>
-          <RcButton
-            v-if="value.spec.helm?.chart"
-            variant="tertiary"
-            @click="clearHelmChart"
-          >
-            {{ t('appsPlus.helm.clearChart') }}
-          </RcButton>
-        </div>
-
-        <div class="row mb-15">
-          <div class="col span-6">
-            <LabeledInput
-              v-model:value="value.spec.helm.repo"
-              :mode="mode"
-              :label="t('appsPlus.helm.repoUrl')"
-              :placeholder="t('appsPlus.helm.repoUrlPlaceholder')"
-            />
-          </div>
-          <div class="col span-6">
-            <LabeledInput
-              v-model:value="value.spec.helm.chart"
-              :mode="mode"
-              :label="t('appsPlus.helm.chart')"
-            />
-          </div>
-        </div>
-
-        <div class="row">
-          <div class="col span-6">
-            <LabeledInput
-              v-model:value="value.spec.helm.version"
-              :mode="mode"
-              :label="t('appsPlus.helm.version')"
-            />
-          </div>
-          <div class="col span-6">
-            <LabeledInput
-              v-model:value="value.spec.helm.releaseName"
-              :mode="mode"
-              :label="t('appsPlus.helm.releaseName')"
-            />
-          </div>
-        </div>
+          {{ t('appsPlus.app.useDefaultCluster') }}
+        </RcButton>
       </Tab>
 
       <Tab
         name="dependencies"
         :label="t('appsPlus.app.dependencies')"
-        :weight="1"
+        :weight="0"
       >
         <Banner
           color="info"
@@ -595,48 +478,7 @@ export default {
           :label="t('appsPlus.dependencies.empty')"
         />
       </Tab>
-
-      <Tab
-        name="cluster"
-        :label="t('appsPlus.app.clusterTemplate')"
-        :weight="0"
-      >
-        <Banner
-          color="info"
-          :label="t('appsPlus.app.clusterTemplateHint')"
-        />
-        <YamlEditor
-          :key="`cluster-template-${ clusterTemplateKey }`"
-          :value="value.spec.clusterTemplate || ''"
-          :mode="mode"
-          :hide-preview-buttons="true"
-          class="yaml"
-          @update:value="v => value.spec.clusterTemplate = v"
-        />
-        <rc-button
-          v-if="!isView && !value.spec.clusterTemplate"
-          variant="secondary"
-          class="mt-10"
-          @click="useDefaultClusterTemplate"
-        >
-          {{ t('appsPlus.app.useDefaultCluster') }}
-        </rc-button>
-      </Tab>
     </Tabbed>
-
-    <ImportResourceModal
-      v-if="importing"
-      :taken-values="valueNames"
-      @close="importing = false"
-      @imported="addImported"
-    />
-
-    <ImportHelmChartModal
-      v-if="importingHelm"
-      :create-app="false"
-      @close="importingHelm = false"
-      @imported="addImportedHelm"
-    />
   </CruResource>
 </template>
 
@@ -661,18 +503,20 @@ export default {
 }
 
 .dependencies-list {
-  display:        flex;
-  flex-direction: column;
-  gap:            8px;
+  border:        1px solid var(--border);
+  border-radius: var(--border-radius);
+  overflow:      hidden;
 
   &__row {
     display:         flex;
     align-items:     center;
     justify-content: space-between;
-    padding:         8px 12px;
-    border:          1px solid var(--border);
-    border-radius:   var(--border-radius);
-    background:      var(--box-bg);
+    padding:         10px 14px;
+    border-bottom:   1px solid var(--border);
+
+    &:last-child {
+      border-bottom: none;
+    }
   }
 
   &__info {
@@ -687,18 +531,18 @@ export default {
   }
 
   &__badge {
+    font-size:     11px;
     padding:       1px 8px;
     border-radius: var(--border-radius);
     background:    var(--accent-btn);
     color:         var(--link);
     border:        1px solid var(--link);
-    font-size:     11px;
   }
 
   &__status {
+    font-size:     11px;
     padding:       1px 8px;
     border-radius: var(--border-radius);
-    font-size:     11px;
 
     &--ok {
       background: var(--success-banner-bg, rgba(46, 160, 67, 0.15));
@@ -712,72 +556,36 @@ export default {
   }
 }
 
-.provided {
-  margin-top: 16px;
-  font-size: 12px;
-  color: var(--muted);
+.template-editor {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 16px;
+  min-height: 360px;
+}
 
-  &__title {
-    font-weight: 600;
-    margin-bottom: 4px;
-  }
+.file-list {
+  border: 1px solid var(--border);
+  border-radius: var(--border-radius);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
 
-  &__list {
+  ul {
     list-style: none;
     margin: 0;
     padding: 0;
 
     li {
       display: flex;
-      align-items: baseline;
-      gap: 8px;
-      padding: 1px 0;
-    }
-
-    code {
-      flex: 0 0 auto;
-    }
-  }
-
-  &__what {
-    color: var(--muted);
-  }
-}
-
-.template-editor {
-  display: flex;
-  gap: 16px;
-
-  .file-list {
-    &__buttons {
-      display: flex;
-      gap:     8px;
-    }
-
-    flex:      0 1 220px;
-    min-width: 0;
-
-    ul {
-      list-style: none;
-      margin: 0 0 10px 0;
-      padding: 0;
-    }
-
-    li {
-      display: flex;
-      align-items: center;
       justify-content: space-between;
-      padding: 6px 8px;
-      border: 1px solid var(--border);
-      border-radius: var(--border-radius);
-      margin-bottom: 4px;
+      align-items: center;
+      padding: 8px 10px;
       cursor: pointer;
-      font-family: monospace;
-      font-size: 12px;
+      border-bottom: 1px solid var(--border);
 
       &.active {
-        border-color: var(--primary);
-        color: var(--primary);
+        background: var(--accent-btn);
+        font-weight: 600;
       }
 
       .file-name {
@@ -788,12 +596,54 @@ export default {
     }
   }
 
-  .file-body {
-    flex: 1;
-    min-width: 0;
+  &__buttons {
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
 
-    .yaml {
-      min-height: 320px;
+    > * {
+      width: 100%;
+      justify-content: center;
+      border-radius: 0;
+    }
+  }
+}
+
+.file-body {
+  display: flex;
+  flex-direction: column;
+
+  .yaml {
+    flex: 1;
+    min-height: 300px;
+  }
+}
+
+.provided {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted);
+
+  &__title {
+    margin-bottom: 6px;
+  }
+
+  &__list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 4px 12px;
+
+    li {
+      display: contents;
+    }
+
+    code {
+      color: var(--body-text);
     }
   }
 }

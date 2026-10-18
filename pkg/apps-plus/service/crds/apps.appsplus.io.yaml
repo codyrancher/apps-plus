@@ -61,7 +61,12 @@ spec:
                       type: string
                     version:
                       type: string
+                    versions:
+                      items:
+                        type: string
+                      type: array
                   type: object
+                  x-kubernetes-preserve-unknown-fields: true
                 templates:
                   description: The chart. Each entry is one YAML file applied to every target.
                   items:
