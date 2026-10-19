@@ -3,7 +3,8 @@ import AppModal from '@shell/components/AppModal.vue';
 import { LabeledInput } from '@components/Form/LabeledInput';
 import { RcButton } from '@components/RcButton';
 import { Banner } from '@components/Banner';
-import { APP, DEPENDENCIES_ANNOTATION } from '../config/types';
+import DependenciesPopover from './DependenciesPopover.vue';
+import { APP, APP_INSTANCE, DEPENDENCIES_ANNOTATION } from '../config/types';
 import {
   fetchHelmRepoIndex,
   fetchHelmChartDetails,
@@ -19,18 +20,20 @@ export default {
     LabeledInput,
     RcButton,
     Banner,
+    DependenciesPopover,
   },
 
   emits: ['close', 'imported'],
 
   data() {
     return {
-      repoUrl:       '',
-      charts:        [],
-      loadingIndex:  false,
-      importing:     false,
-      error:         '',
-      debounceTimer: null,
+      repoUrl:           '',
+      charts:            [],
+      loadingIndex:      false,
+      importing:         false,
+      error:             '',
+      debounceTimer:     null,
+      openDepPopoverKey: null,
     };
   },
 
@@ -39,17 +42,49 @@ export default {
       return !!this.repoUrl?.trim() && !this.importing;
     },
 
+    previewAppsByName() {
+      const existingApps = this.$store.getters['management/all'](APP) || [];
+      const byName = Object.fromEntries(existingApps.map((app) => [app.metadata?.name, app]));
+
+      this.charts.forEach((chart) => {
+        if (chart.name && !byName[chart.name]) {
+          byName[chart.name] = { metadata: { name: chart.name } };
+        }
+      });
+
+      return byName;
+    },
+
+    installedAppNames() {
+      const instances = this.$store.getters['management/all'](APP_INSTANCE) || [];
+
+      return new Set(
+        instances
+          .filter((inst) => !inst.isTerminating && inst.spec?.app)
+          .map((inst) => inst.spec.app)
+      );
+    },
+
     chartSummaries() {
       return this.charts.map((chart) => {
         const latest = chart.versions?.[0];
         const versions = (chart.versions || []).map((v) => v.version).filter(Boolean);
         const deps = extractChartImplicitDependencies(latest);
+        const missing = deps.filter((dep) => !this.previewAppsByName[dep]);
 
         return {
           name:        chart.name,
           description: chart.description || latest?.description || '',
           versions,
           deps,
+          verRow:      { _key: `import-ver-${ chart.name }` },
+          depRow:      {
+            _key: `import-dep-${ chart.name }`,
+            app:  {
+              dependencies:        deps,
+              missingDependencies: missing,
+            },
+          },
         };
       });
     },
@@ -240,6 +275,7 @@ export default {
     <div
       class="import-helm"
       data-testid="import-helm-modal"
+      @click="openDepPopoverKey = null"
     >
       <h4 class="import-helm__title">
         {{ t('appsPlus.helm.importTitle') }}
@@ -274,32 +310,55 @@ export default {
         <div class="import-helm__preview-title">
           {{ t('appsPlus.helm.chartsFound', { count: chartSummaries.length }) }}
         </div>
-        <ul class="import-helm__chart-list">
-          <li
-            v-for="item in chartSummaries"
-            :key="item.name"
-            class="import-helm__chart-item"
-          >
-            <div class="import-helm__chart-head">
-              <strong>{{ item.name }}</strong>
-              <span class="text-muted ml-10">
-                {{ item.versions.join(', ') }}
-              </span>
-              <span
-                v-if="item.deps.length"
-                class="import-helm__dep-pill ml-10"
-              >
-                {{ t('appsPlus.list.dependsOn', { deps: item.deps.join(', ') }) }}
-              </span>
-            </div>
-            <div
-              v-if="item.description"
-              class="text-muted text-small"
+        <table class="import-helm__table">
+          <thead>
+            <tr>
+              <th>{{ t('appsPlus.headers.chart') }}</th>
+              <th class="import-helm__col-indicator">
+                {{ t('appsPlus.headers.versions') }}
+              </th>
+              <th class="import-helm__col-indicator">
+                {{ t('appsPlus.headers.dependencies') }}
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="item in chartSummaries"
+              :key="item.name"
+              class="import-helm__chart-item"
             >
-              {{ item.description }}
-            </div>
-          </li>
-        </ul>
+              <td>
+                <strong>{{ item.name }}</strong>
+                <div
+                  v-if="item.description"
+                  class="text-muted text-small"
+                >
+                  {{ item.description }}
+                </div>
+              </td>
+              <td class="import-helm__col-indicator">
+                <DependenciesPopover
+                  :row="item.verRow"
+                  :versions="item.versions"
+                  :open-key="openDepPopoverKey"
+                  align="right"
+                  @toggle="openDepPopoverKey = $event"
+                />
+              </td>
+              <td class="import-helm__col-indicator">
+                <DependenciesPopover
+                  :row="item.depRow"
+                  :apps-by-name="previewAppsByName"
+                  :installed-app-names="installedAppNames"
+                  :open-key="openDepPopoverKey"
+                  align="right"
+                  @toggle="openDepPopoverKey = $event"
+                />
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </div>
 
       <Banner
@@ -340,8 +399,6 @@ export default {
     border: 1px solid var(--border);
     border-radius: var(--border-radius);
     padding: 10px 12px;
-    max-height: 220px;
-    overflow-y: auto;
   }
 
   &__preview-title {
@@ -351,33 +408,34 @@ export default {
     margin-bottom: 8px;
   }
 
-  &__chart-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-  }
+  &__table {
+    width: 100%;
+    border-collapse: collapse;
 
-  &__chart-item {
-    padding: 6px 0;
-    border-bottom: 1px solid var(--border);
+    th {
+      text-align: left;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+      padding: 4px 8px 6px 0;
+      border-bottom: 1px solid var(--border);
+    }
 
-    &:last-child {
+    td {
+      padding: 8px 8px 8px 0;
+      vertical-align: middle;
+      border-bottom: 1px solid var(--border);
+    }
+
+    tbody tr:last-child td {
       border-bottom: none;
     }
   }
 
-  &__chart-head {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-  }
-
-  &__dep-pill {
-    font-size: 11px;
-    padding: 1px 6px;
-    border-radius: var(--border-radius);
-    background: var(--box-bg);
-    border: 1px solid var(--border);
+  &__col-indicator {
+    width: 110px;
+    text-align: center !important;
+    padding-right: 0 !important;
   }
 
   &__buttons {

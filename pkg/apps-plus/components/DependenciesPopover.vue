@@ -11,6 +11,10 @@ export default {
       type:     Object,
       required: true,
     },
+    versions: {
+      type:    Array,
+      default: () => [],
+    },
     appsByName: {
       type:    Object,
       default: () => ({}),
@@ -22,6 +26,10 @@ export default {
     openKey: {
       type:    String,
       default: null,
+    },
+    align: {
+      type:    String,
+      default: 'left',
     },
   },
 
@@ -36,6 +44,10 @@ export default {
       return this.openKey === this.rowKey;
     },
 
+    isVersionsMode() {
+      return this.versions.length > 0;
+    },
+
     dependencies() {
       return this.row?.app?.dependencies || [];
     },
@@ -45,7 +57,7 @@ export default {
     },
 
     hasEntries() {
-      return this.dependencies.length > 0 || this.dependentInstances.length > 0 || !!this.row?.isDependency;
+      return this.isVersionsMode || this.dependencies.length > 0 || this.dependentInstances.length > 0 || !!this.row?.isDependency;
     },
 
     missingDependencies() {
@@ -59,7 +71,7 @@ export default {
     },
 
     hasWarnings() {
-      return this.missingDependencies.length > 0 || this.uninstalledDependencies.length > 0;
+      return !this.isVersionsMode && (this.missingDependencies.length > 0 || this.uninstalledDependencies.length > 0);
     },
   },
 
@@ -82,12 +94,12 @@ export default {
       type="button"
       class="dep-trigger"
       :class="{ 'dep-trigger--warning': hasWarnings }"
-      data-testid="dependencies-trigger"
+      :data-testid="isVersionsMode ? 'versions-trigger' : 'dependencies-trigger'"
       @click="toggle"
     >
       <i
         class="icon icon-checkmark"
-        data-testid="dependency-checkmark"
+        :data-testid="isVersionsMode ? 'version-checkmark' : 'dependency-checkmark'"
       />
       <i
         v-if="hasWarnings"
@@ -98,9 +110,30 @@ export default {
     <div
       v-if="isOpen"
       class="dep-popover"
-      data-testid="dependencies-popover"
+      :class="{ 'dep-popover--right': align === 'right' }"
+      :data-testid="isVersionsMode ? 'versions-popover' : 'dependencies-popover'"
     >
-      <template v-if="dependencies.length">
+      <template v-if="isVersionsMode">
+        <div class="dep-popover__header">
+          {{ t('appsPlus.helm.versionsPopoverTitle', { count: versions.length }) }}
+        </div>
+        <ul class="dep-popover__list">
+          <li
+            v-for="(ver, idx) in versions"
+            :key="ver"
+            class="dep-popover__item"
+          >
+            <span>{{ ver }}</span>
+            <BadgeState
+              v-if="idx === 0"
+              color="bg-info"
+              :label="t('appsPlus.helm.latestVersion')"
+            />
+          </li>
+        </ul>
+      </template>
+
+      <template v-else-if="dependencies.length">
         <div class="dep-popover__header">
           {{ t('appsPlus.dependencies.popoverTitle', { count: dependencies.length }) }}
         </div>
@@ -138,7 +171,7 @@ export default {
         </ul>
       </template>
 
-      <template v-if="dependentInstances.length">
+      <template v-if="!isVersionsMode && dependentInstances.length">
         <div
           class="dep-popover__header"
           :class="{ 'dep-popover__header--spaced': dependencies.length }"
@@ -209,7 +242,8 @@ export default {
   }
 
   &--warning {
-    color: var(--warning);
+    background: var(--warning-badge, var(--warning-banner));
+    color: var(--on-warning-banner);
   }
 }
 
@@ -220,10 +254,16 @@ export default {
   z-index: 100;
   min-width: 280px;
   padding: 12px;
+  text-align: left;
   background: var(--body-bg);
   border: 1px solid var(--border);
   border-radius: var(--border-radius);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+
+  &--right {
+    left: auto;
+    right: 0;
+  }
 
   &__header {
     font-size: 12px;
@@ -241,6 +281,8 @@ export default {
     list-style: none;
     margin: 0;
     padding: 0;
+    max-height: 180px;
+    overflow-y: auto;
   }
 
   &__item {
@@ -263,10 +305,15 @@ export default {
   }
 
   &__warning {
+    padding: 6px 8px;
+    border-radius: var(--border-radius);
+    background: var(--warning-badge, var(--warning-banner));
+    color: var(--on-warning-banner);
     font-size: 12px;
-    color: var(--warning);
+    line-height: 1.4;
 
     &--error {
+      background: var(--error-banner-bg, rgba(208, 2, 27, 0.15));
       color: var(--error);
     }
   }

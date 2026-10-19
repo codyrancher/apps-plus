@@ -22,6 +22,8 @@ appsPlus:
     repoUrlPlaceholder: https://example.com/charts
     loadingCharts: Loading...
     chartsFound: '{count, plural, one {1 chart found in repository} other {# charts found in repository}}'
+    versionsPopoverTitle: 'Versions ({count})'
+    latestVersion: Latest
     importAction: Import All Charts
     importing: Importing...
     detailBanner: 'Deploys Helm chart {chart} from {repo}'
@@ -88,11 +90,10 @@ appsPlus:
     appActions: 'Actions for {name}'
   list:
     noInstances: No installations of this app yet.
-    notInstalled: Not Installed
     needsAttention: '{count, plural, one {1 installation needs} other {# installations need}} values before the new template can be deployed.'
-    dependsOn: 'Depends on: {deps}'
   headers:
     app: App
+    versions: Versions
     dependencies: Dependencies
     clusters: Clusters
     namespace: Namespace

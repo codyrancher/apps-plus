@@ -91,17 +91,12 @@ export default {
 
     placeholderRows() {
       return this.emptyApps.map((app) => ({
-        _key:             `empty-${ app.id }`,
-        id:               `empty-${ app.id }`,
-        mainRowKey:       app.id,
-        groupById:        app.metadata?.name,
-        isPlaceholder:    true,
-        nameDisplay:      this.t('appsPlus.list.noInstances'),
-        targetDisplay:    '—',
-        targetNamespace:  '—',
-        readyDisplay:     '—',
+        _key:          `empty-${ app.id }`,
+        id:            `empty-${ app.id }`,
+        mainRowKey:    app.id,
+        groupById:     app.metadata?.name,
+        isPlaceholder: true,
         app,
-        availableActions: [],
       }));
     },
 
@@ -199,6 +194,10 @@ export default {
 
     appFor(group) {
       return group?.rows?.[0]?.app || null;
+    },
+
+    placeholderSlot(app) {
+      return `main-row:${ app.id }`;
     },
 
     attentionCount(group) {
@@ -302,27 +301,14 @@ export default {
 
       <template #cell:state="{row}">
         <BadgeState
-          v-if="row.isPlaceholder"
-          color="bg-darker"
-          :label="t('appsPlus.list.notInstalled')"
-          data-testid="state-not-installed"
-        />
-        <BadgeState
-          v-else
           :value="row"
           data-testid="instance-state-badge"
         />
       </template>
 
       <template #cell:name="{row}">
-        <span
-          v-if="row.isPlaceholder"
-          class="text-muted"
-        >
-          {{ t('appsPlus.list.noInstances') }}
-        </span>
         <router-link
-          v-else-if="row.detailLocation"
+          v-if="row.detailLocation"
           :to="row.detailLocation"
         >
           {{ row.nameDisplay }}
@@ -338,6 +324,21 @@ export default {
           :open-key="openDepPopoverKey"
           @toggle="openDepPopoverKey = $event"
         />
+      </template>
+
+      <template
+        v-for="app in emptyApps"
+        :key="app.id"
+        #[placeholderSlot(app)]="{ fullColspan }"
+      >
+        <tr class="main-row">
+          <td
+            class="empty text-center"
+            :colspan="fullColspan"
+          >
+            {{ t('appsPlus.list.noInstances') }}
+          </td>
+        </tr>
       </template>
     </ResourceTable>
 
@@ -413,6 +414,10 @@ export default {
 
     td {
       overflow: visible;
+    }
+
+    td.empty {
+      padding: 12px;
     }
   }
 }
