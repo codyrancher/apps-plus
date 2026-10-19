@@ -41,8 +41,8 @@ appsPlus:
     notInstalled: Not Installed
     missingWarning: 'Missing dependency app(s): {deps}'
     uninstalledWarning: 'Not yet installed: {deps} (will be installed automatically)'
-    cannotDeleteTitle: 'Cannot Delete Dependency Installation "{name}"'
-    cannotDeleteWarning: 'Installation "{name}" ({app}) was installed as a required dependency and cannot be deleted while other installations rely on it.'
+    cannotDeleteTitle: 'Cannot Delete Dependency Installation {name}'
+    cannotDeleteWarning: 'Installation {name} ({app}) was installed as a required dependency and cannot be deleted while other installations rely on it.'
     reliedOnByLabel: 'Relied upon by:'
   related:
     tabLabel: Related Resources
@@ -89,8 +89,6 @@ appsPlus:
   list:
     noInstances: No installations of this app yet.
     notInstalled: Not Installed
-    dependencyBadge: Dependency
-    dependencyInstanceHint: Installed as a dependency of another app. Click to view dependent installations.
     needsAttention: '{count, plural, one {1 installation needs} other {# installations need}} values before the new template can be deployed.'
     dependsOn: 'Depends on: {deps}'
   headers:

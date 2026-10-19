@@ -321,29 +321,13 @@ export default {
         >
           {{ t('appsPlus.list.noInstances') }}
         </span>
-        <div
-          v-else
-          class="name-cell"
+        <router-link
+          v-else-if="row.detailLocation"
+          :to="row.detailLocation"
         >
-          <router-link
-            v-if="row.detailLocation"
-            :to="row.detailLocation"
-          >
-            {{ row.nameDisplay }}
-          </router-link>
-          <span v-else>{{ row.nameDisplay }}</span>
-
-          <button
-            v-if="row.isDependency"
-            type="button"
-            class="dep-instance-badge"
-            data-testid="dependency-instance-badge"
-            :title="t('appsPlus.list.dependencyInstanceHint')"
-            @click.stop="row.showBlockedDeleteModal()"
-          >
-            {{ t('appsPlus.list.dependencyBadge') }}
-          </button>
-        </div>
+          {{ row.nameDisplay }}
+        </router-link>
+        <span v-else>{{ row.nameDisplay }}</span>
       </template>
 
       <template #cell:dependencies="{row}">
@@ -431,22 +415,5 @@ export default {
       overflow: visible;
     }
   }
-}
-
-.name-cell {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.dep-instance-badge {
-  padding: 1px 8px;
-  border-radius: var(--border-radius);
-  background: var(--warning-badge, var(--warning-banner));
-  color: var(--on-warning-banner);
-  border: none;
-  font-size: 11px;
-  line-height: 18px;
-  cursor: pointer;
 }
 </style>

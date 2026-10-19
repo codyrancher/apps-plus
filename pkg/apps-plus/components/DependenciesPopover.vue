@@ -40,6 +40,14 @@ export default {
       return this.row?.app?.dependencies || [];
     },
 
+    dependentInstances() {
+      return this.row?.dependentInstances || [];
+    },
+
+    hasEntries() {
+      return this.dependencies.length > 0 || this.dependentInstances.length > 0 || !!this.row?.isDependency;
+    },
+
     missingDependencies() {
       return this.row?.app?.missingDependencies || [];
     },
@@ -64,12 +72,7 @@ export default {
 </script>
 
 <template>
-  <span
-    v-if="!dependencies.length"
-    class="text-muted"
-  >
-    —
-  </span>
+  <span v-if="!hasEntries" />
   <div
     v-else
     class="dep-cell"
@@ -82,9 +85,10 @@ export default {
       data-testid="dependencies-trigger"
       @click="toggle"
     >
-      <span>
-        {{ dependencies.length === 1 ? dependencies[0] : dependencies.length }}
-      </span>
+      <i
+        class="icon icon-checkmark"
+        data-testid="dependency-checkmark"
+      />
       <i
         v-if="hasWarnings"
         class="icon icon-warning ml-5"
@@ -96,41 +100,67 @@ export default {
       class="dep-popover"
       data-testid="dependencies-popover"
     >
-      <div class="dep-popover__header">
-        {{ t('appsPlus.dependencies.popoverTitle', { count: dependencies.length }) }}
-      </div>
-      <ul class="dep-popover__list">
-        <li
-          v-for="dep in dependencies"
-          :key="dep"
-          class="dep-popover__item"
-        >
-          <router-link
-            v-if="appsByName[dep]?.detailLocation"
-            :to="appsByName[dep].detailLocation"
-            @click="$emit('toggle', null)"
+      <template v-if="dependencies.length">
+        <div class="dep-popover__header">
+          {{ t('appsPlus.dependencies.popoverTitle', { count: dependencies.length }) }}
+        </div>
+        <ul class="dep-popover__list">
+          <li
+            v-for="dep in dependencies"
+            :key="dep"
+            class="dep-popover__item"
           >
-            {{ dep }}
-          </router-link>
-          <span v-else>{{ dep }}</span>
+            <router-link
+              v-if="appsByName[dep]?.detailLocation"
+              :to="appsByName[dep].detailLocation"
+              @click="$emit('toggle', null)"
+            >
+              {{ dep }}
+            </router-link>
+            <span v-else>{{ dep }}</span>
 
-          <BadgeState
-            v-if="!appsByName[dep]"
-            color="bg-error"
-            :label="t('appsPlus.dependencies.missing')"
-          />
-          <BadgeState
-            v-else-if="installedAppNames.has(dep)"
-            color="bg-success"
-            :label="t('appsPlus.dependencies.installed')"
-          />
-          <BadgeState
-            v-else
-            color="bg-warning"
-            :label="t('appsPlus.dependencies.notInstalled')"
-          />
-        </li>
-      </ul>
+            <BadgeState
+              v-if="!appsByName[dep]"
+              color="bg-error"
+              :label="t('appsPlus.dependencies.missing')"
+            />
+            <BadgeState
+              v-else-if="installedAppNames.has(dep)"
+              color="bg-success"
+              :label="t('appsPlus.dependencies.installed')"
+            />
+            <BadgeState
+              v-else
+              color="bg-warning"
+              :label="t('appsPlus.dependencies.notInstalled')"
+            />
+          </li>
+        </ul>
+      </template>
+
+      <template v-if="dependentInstances.length">
+        <div
+          class="dep-popover__header"
+          :class="{ 'dep-popover__header--spaced': dependencies.length }"
+        >
+          {{ t('appsPlus.dependencies.reliedOnByLabel') }}
+        </div>
+        <ul class="dep-popover__list">
+          <li
+            v-for="depInst in dependentInstances"
+            :key="depInst.metadata.name"
+            class="dep-popover__item"
+          >
+            <router-link
+              :to="depInst.detailLocation"
+              data-testid="dependent-instance-link"
+              @click="$emit('toggle', null)"
+            >
+              {{ depInst.nameDisplay }} ({{ depInst.appDisplay }})
+            </router-link>
+          </li>
+        </ul>
+      </template>
 
       <div
         v-if="hasWarnings"
@@ -165,21 +195,21 @@ export default {
 .dep-trigger {
   display: inline-flex;
   align-items: center;
-  padding: 2px 10px;
-  border-radius: 12px;
-  background: var(--box-bg);
-  border: 1px solid var(--border);
-  color: var(--body-text);
-  font-size: 12px;
+  padding: 4px 6px;
+  border-radius: var(--border-radius);
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--link);
+  font-size: 14px;
   cursor: pointer;
 
   &:hover {
-    border-color: var(--link);
-    color: var(--link);
+    background: var(--box-bg);
+    border-color: var(--border);
   }
 
   &--warning {
-    border-color: var(--warning);
+    color: var(--warning);
   }
 }
 
@@ -201,6 +231,10 @@ export default {
     margin-bottom: 8px;
     padding-bottom: 6px;
     border-bottom: 1px solid var(--border);
+
+    &--spaced {
+      margin-top: 10px;
+    }
   }
 
   &__list {
