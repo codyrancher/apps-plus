@@ -34,8 +34,6 @@ export const APP_QUERY = 'app';
 export const DEPENDENCIES_ANNOTATION = 'appsplus.io/dependencies';
 export const DEPENDS_ON_ANNOTATION = 'appsplus.io/depends-on';
 export const DEPENDS_ON_LABEL_PREFIX = 'depends-on.appsplus.io/';
-export const DEPENDENCY_INSTANCE_LABEL = 'appsplus.io/dependency';
-export const REQUIRED_BY_ANNOTATION = 'appsplus.io/required-by';
 
 export function parseDependencyList(raw?: string | null): string[] {
   if (!raw || typeof raw !== 'string') {

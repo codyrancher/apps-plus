@@ -49,7 +49,7 @@ export default {
     },
 
     dependencies() {
-      return this.row?.app?.dependencies || [];
+      return this.row?.dependencies || this.row?.app?.dependencies || [];
     },
 
     dependentInstances() {

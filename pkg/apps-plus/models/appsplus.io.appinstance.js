@@ -3,8 +3,7 @@ import SteveModel from '@shell/plugins/steve/steve-class';
 import {
   APP, APP_INSTANCE, FLEET_BUNDLE, FLEET_BUNDLE_DEPLOYMENT, FLEET_CLUSTER, BUNDLE_PREFIX, DEFAULT_WORKSPACE,
   DEFAULT_TARGET_NAMESPACE,
-  PROVISIONING_CLUSTER, PROVISION_WORKSPACE, PRODUCT_NAME, BLANK_CLUSTER, LIST_ROUTE, steveType,
-  DEPENDENCY_INSTANCE_LABEL, REQUIRED_BY_ANNOTATION, parseDependencyList
+  PROVISIONING_CLUSTER, PROVISION_WORKSPACE, PRODUCT_NAME, BLANK_CLUSTER, LIST_ROUTE, steveType
 } from '../config/types';
 import { NORMAN } from '@shell/config/types';
 import {
@@ -45,31 +44,67 @@ export default class AppInstance extends SteveModel {
     return this.spec?.version || this.app?.helmVersion || '';
   }
 
+  get dependencies() {
+    const fromApp = this.app?.dependencies || [];
+    const bundleDeps = this.bundle?.spec?.dependsOn || [];
+
+    if (!bundleDeps.length) {
+      return fromApp;
+    }
+
+    let allInstances = [];
+
+    try {
+      allInstances = this.$rootGetters['management/all'](APP_INSTANCE) || [];
+    } catch {}
+
+    const fromBundle = bundleDeps.map((d) => {
+      if (d?.selector?.matchLabels?.['appsplus.io/app']) {
+        return d.selector.matchLabels['appsplus.io/app'];
+      }
+      if (d?.name) {
+        const match = allInstances.find((inst) => inst.bundleName === d.name);
+
+        if (match?.spec?.app) {
+          return match.spec.app;
+        }
+
+        return d.name.replace(new RegExp(`^${ BUNDLE_PREFIX }`), '').replace(/-dep$/, '');
+      }
+
+      return '';
+    }).filter(Boolean);
+
+    return [...new Set([...fromApp, ...fromBundle])];
+  }
+
   get dependentInstances() {
     const myApp = this.spec?.app;
+    const myBundle = this.bundleName;
 
-    if (!myApp) {
+    if (!myApp && !myBundle) {
       return [];
     }
 
     try {
       const allInstances = this.$rootGetters['management/all'](APP_INSTANCE) || [];
-      const requiredByNames = new Set(
-        parseDependencyList(this.metadata?.annotations?.[REQUIRED_BY_ANNOTATION])
-      );
 
       return allInstances.filter((inst) => {
         if (!inst || inst.metadata?.name === this.metadata?.name || inst.isTerminating) {
           return false;
         }
 
-        if (requiredByNames.has(inst.metadata?.name)) {
+        const bundleDeps = inst.bundle?.spec?.dependsOn || [];
+        const matchesBundle = bundleDeps.some((d) => (
+          d?.name === myBundle ||
+          (myApp && d?.selector?.matchLabels?.['appsplus.io/app'] === myApp)
+        ));
+
+        if (matchesBundle) {
           return true;
         }
 
-        const deps = inst.app?.dependencies || [];
-
-        return deps.includes(myApp);
+        return !!myApp && (inst.app?.dependencies || []).includes(myApp);
       });
     } catch {
       return [];
@@ -77,8 +112,7 @@ export default class AppInstance extends SteveModel {
   }
 
   get isDependency() {
-    return this.metadata?.labels?.[DEPENDENCY_INSTANCE_LABEL] === 'true' ||
-      this.dependentInstances.length > 0;
+    return this.dependentInstances.length > 0;
   }
 
   get doneRoute() {
@@ -659,32 +693,13 @@ export default class AppInstance extends SteveModel {
       ));
 
       if (existing) {
-        const currentReq = new Set(
-          parseDependencyList(existing.metadata?.annotations?.[REQUIRED_BY_ANNOTATION])
-        );
-
-        if (this.metadata?.name && !currentReq.has(this.metadata.name)) {
-          currentReq.add(this.metadata.name);
-          existing.metadata.annotations = {
-            ...(existing.metadata?.annotations || {}),
-            [REQUIRED_BY_ANNOTATION]: [...currentReq].join(','),
-          };
-          try {
-            await existing.save();
-          } catch {}
-        }
         continue;
       }
 
-      const depInstanceName = `${ depAppName }-dep`;
       const created = await this.$dispatch('create', {
         type:     APP_INSTANCE,
-        metadata: {
-          name:        depInstanceName,
-          labels:      { [DEPENDENCY_INSTANCE_LABEL]: 'true' },
-          annotations: this.metadata?.name ? { [REQUIRED_BY_ANNOTATION]: this.metadata.name } : {},
-        },
-        spec: {
+        metadata: { name: `${ depAppName }-dep` },
+        spec:     {
           app:       depAppName,
           namespace: this.targetNamespace,
           targets:   this.effectiveTargets,
@@ -695,6 +710,25 @@ export default class AppInstance extends SteveModel {
 
       allInstances.push(savedDep);
     }
+  }
+
+  async resolveDependsOn(app) {
+    const deps = app?.dependencies || [];
+
+    if (!deps.length) {
+      return [];
+    }
+
+    const allInstances = await this.findAllOrCached(APP_INSTANCE, { force: true });
+
+    return deps.map((depAppName) => {
+      const match = allInstances.find((inst) => (
+        inst?.spec?.app === depAppName && !inst.isTerminating
+      ));
+      const name = match ? match.bundleName : `${ BUNDLE_PREFIX }${ depAppName }-dep`;
+
+      return { name };
+    });
   }
 
   async resolveMissingDependencies() {
@@ -879,6 +913,7 @@ export default class AppInstance extends SteveModel {
 
   async syncBundle() {
     const app = await this.resolveApp();
+    const dependsOn = await this.resolveDependsOn(app);
     let resources = renderTemplates(app, this);
     const byWorkspace = await this.targetsByWorkspace();
     const helmSpec = { takeOwnership: true };
@@ -935,6 +970,10 @@ export default class AppInstance extends SteveModel {
         helm:             helmSpec,
       };
 
+      if (dependsOn.length > 0) {
+        bundleSpec.dependsOn = dependsOn;
+      }
+
       if (!app?.isHelmChart || resources.length > 0) {
         bundleSpec.resources = resources;
       }
@@ -960,6 +999,7 @@ export default class AppInstance extends SteveModel {
         name:            this.bundleName,
         namespace,
         labels:          {
+          'appsplus.io/app':      this.spec?.app || '',
           'appsplus.io/instance': this.metadata?.name,
           'appsplus.io/install':  this.metadata?.name,
         },

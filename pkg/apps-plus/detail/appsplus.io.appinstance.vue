@@ -184,7 +184,7 @@ export default {
 
       rows.push(...crdRelatedRows(t));
 
-      (app?.dependencies || []).forEach((dep) => {
+      (this.value.dependencies || []).forEach((dep) => {
         const depInst = this.instances.find((inst) => inst.spec?.app === dep && !inst.isTerminating);
         const depApp = this.appsByName[dep];
 
