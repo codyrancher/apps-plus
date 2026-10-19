@@ -59,6 +59,10 @@ export interface UndeclaredReference {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function undeclaredReferences(app: any): UndeclaredReference[] {
+  if (app?.isHelmChart || app?.spec?.helm?.chart) {
+    return [];
+  }
+
   const declared = new Set([...Object.keys(app?.spec?.values || {}), ...BUILT_IN_VALUES]);
 
   return (app?.spec?.templates || [])

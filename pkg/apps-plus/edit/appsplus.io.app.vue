@@ -2,9 +2,9 @@
 import CreateEditView from '@shell/mixins/create-edit-view';
 import CruResource from '@shell/components/CruResource';
 import NameNsDescription from '@shell/components/form/NameNsDescription';
-import LabeledSelect from '@shell/components/form/LabeledSelect';
 import { LabeledInput } from '@components/Form/LabeledInput';
 import ValuesEditor from '../components/ValuesEditor';
+import DependenciesEditor from '../components/DependenciesEditor.vue';
 import YamlEditor from '@shell/components/YamlEditor';
 import Tabbed from '@shell/components/Tabbed';
 import Tab from '@shell/components/Tabbed/Tab';
@@ -32,9 +32,9 @@ export default {
   components: {
     CruResource,
     NameNsDescription,
-    LabeledSelect,
     LabeledInput,
     ValuesEditor,
+    DependenciesEditor,
     YamlEditor,
     Tabbed,
     Tab,
@@ -71,7 +71,6 @@ export default {
       selected:           0,
       clusterTemplateKey: 0,
       templatesKey:       0,
-      newDependency:      '',
     };
   },
 
@@ -80,8 +79,12 @@ export default {
       return this.$store.getters['management/all'](APP) || [];
     },
 
+    availableAppNames() {
+      return this.allApps.map((app) => app.metadata?.name).filter(Boolean);
+    },
+
     existingAppNames() {
-      return new Set(this.allApps.map((app) => app.metadata?.name).filter(Boolean));
+      return new Set(this.availableAppNames);
     },
 
     explicitDependencies() {
@@ -92,43 +95,18 @@ export default {
       return extractMetadataDependencies(this.value.metadata);
     },
 
-    allDependencies() {
-      const explicitSet = new Set(this.explicitDependencies);
-      const implicitSet = new Set(this.implicitDependencies);
-      const combined = [...new Set([...this.explicitDependencies, ...this.implicitDependencies])];
-
-      return combined.map((name) => ({
-        name,
-        explicit: explicitSet.has(name),
-        implicit: implicitSet.has(name),
-        exists:   this.existingAppNames.has(name),
-      }));
-    },
-
-    dependencyOptions() {
-      const selfName = this.value.metadata?.name;
-      const currentDeps = new Set(this.allDependencies.map((d) => d.name));
-
-      return this.allApps
-        .map((app) => app.metadata?.name)
-        .filter((name) => name && name !== selfName && !currentDeps.has(name))
-        .sort()
-        .map((name) => ({
-          label: name,
-          value: name,
-        }));
-    },
-
     documentedValues() {
       return DOCUMENTED_VALUES;
     },
 
     valueKeys() {
-      const found = new Set(appVariables(this.value, true));
+      const found = new Set(appVariables(this.value, !this.value.isHelmChart));
 
-      this.templates.forEach((template) => {
-        referencedVariables(template?.content || '').forEach((name) => found.add(name));
-      });
+      if (!this.value.isHelmChart) {
+        this.templates.forEach((template) => {
+          referencedVariables(template?.content || '').forEach((name) => found.add(name));
+        });
+      }
 
       return [...found]
         .filter((name) => !BUILT_IN_VALUES.includes(name))
@@ -153,7 +131,7 @@ export default {
     },
 
     required() {
-      return [...new Set([...requiredValues(this.value), ...requiredValues(this.value, true)])];
+      return [...new Set([...requiredValues(this.value), ...requiredValues(this.value, !this.value.isHelmChart)])];
     },
 
     undeclared() {
@@ -171,10 +149,7 @@ export default {
       this.selected = this.templates.length - 1;
     },
 
-    addDependency() {
-      const raw = typeof this.newDependency === 'object' ? this.newDependency?.value || this.newDependency?.label : this.newDependency;
-      const name = String(raw || '').trim();
-
+    addDependency(name) {
       if (!name || name === this.value.metadata?.name) {
         return;
       }
@@ -186,8 +161,6 @@ export default {
       if (!this.value.spec.dependencies.includes(name)) {
         this.value.spec.dependencies.push(name);
       }
-
-      this.newDependency = '';
     },
 
     removeDependency(name) {
@@ -263,6 +236,13 @@ export default {
       :namespaced="false"
       description-key="spec.description"
       :register-before-hook="registerBeforeHook"
+    />
+
+    <Banner
+      v-if="value.isHelmChart"
+      color="info"
+      class="mb-20"
+      :label="t('appsPlus.helm.detailBanner', { chart: value.helmDisplay, repo: value.helmRepo || '—' })"
     />
 
     <Tabbed
@@ -405,77 +385,15 @@ export default {
         :label="t('appsPlus.app.dependencies')"
         :weight="0"
       >
-        <Banner
-          color="info"
-          :label="t('appsPlus.dependencies.hint')"
-        />
-
-        <div
-          v-if="!isView"
-          class="dependencies-add mb-20"
-        >
-          <LabeledSelect
-            v-model:value="newDependency"
-            class="dependencies-add__select"
-            :mode="mode"
-            :options="dependencyOptions"
-            :taggable="true"
-            :searchable="true"
-            :label="t('appsPlus.dependencies.selectLabel')"
-            :placeholder="t('appsPlus.dependencies.selectPlaceholder')"
-            data-testid="dependency-select"
-          />
-          <RcButton
-            variant="secondary"
-            class="dependencies-add__btn"
-            :disabled="!newDependency"
-            data-testid="add-dependency-btn"
-            @click="addDependency"
-          >
-            {{ t('appsPlus.dependencies.add') }}
-          </RcButton>
-        </div>
-
-        <div
-          v-if="allDependencies.length"
-          class="dependencies-list"
-        >
-          <div
-            v-for="dep in allDependencies"
-            :key="dep.name"
-            class="dependencies-list__row"
-            data-testid="dependency-row"
-          >
-            <div class="dependencies-list__info">
-              <span class="dependencies-list__name">{{ dep.name }}</span>
-              <span
-                v-if="dep.implicit"
-                class="dependencies-list__badge"
-              >
-                {{ t('appsPlus.dependencies.implicit') }}
-              </span>
-              <span
-                class="dependencies-list__status"
-                :class="dep.exists ? 'dependencies-list__status--ok' : 'dependencies-list__status--missing'"
-              >
-                {{ dep.exists ? t('appsPlus.dependencies.exists') : t('appsPlus.dependencies.notFound') }}
-              </span>
-            </div>
-            <RcButton
-              v-if="!isView"
-              variant="tertiary"
-              size="sm"
-              data-testid="remove-dependency-btn"
-              @click="removeDependency(dep.name)"
-            >
-              {{ t('appsPlus.dependencies.remove') }}
-            </RcButton>
-          </div>
-        </div>
-        <Banner
-          v-else
-          color="info"
-          :label="t('appsPlus.dependencies.empty')"
+        <DependenciesEditor
+          :mode="mode"
+          :self-name="value.metadata?.name || ''"
+          :explicit-dependencies="explicitDependencies"
+          :implicit-dependencies="implicitDependencies"
+          :available-app-names="availableAppNames"
+          :existing-app-names="existingAppNames"
+          @add="addDependency"
+          @remove="removeDependency"
         />
       </Tab>
     </Tabbed>
@@ -486,74 +404,6 @@ export default {
 :deep(.fill-row) > .col {
   flex:  1 1 0;
   width: auto;
-}
-
-.dependencies-add {
-  display:     flex;
-  align-items: center;
-  gap:         10px;
-
-  &__select {
-    flex: 1;
-  }
-
-  &__btn {
-    white-space: nowrap;
-  }
-}
-
-.dependencies-list {
-  border:        1px solid var(--border);
-  border-radius: var(--border-radius);
-  overflow:      hidden;
-
-  &__row {
-    display:         flex;
-    align-items:     center;
-    justify-content: space-between;
-    padding:         10px 14px;
-    border-bottom:   1px solid var(--border);
-
-    &:last-child {
-      border-bottom: none;
-    }
-  }
-
-  &__info {
-    display:     flex;
-    align-items: center;
-    gap:         10px;
-  }
-
-  &__name {
-    font-family: monospace;
-    font-weight: 600;
-  }
-
-  &__badge {
-    font-size:     11px;
-    padding:       1px 8px;
-    border-radius: var(--border-radius);
-    background:    var(--accent-btn);
-    color:         var(--link);
-    border:        1px solid var(--link);
-  }
-
-  &__status {
-    font-size:     11px;
-    padding:       1px 8px;
-    border-radius: var(--border-radius);
-
-    &--ok {
-      background: var(--success-banner-bg, rgba(46, 160, 67, 0.15));
-      color:      var(--success);
-    }
-
-    &--missing {
-      background: var(--warning-badge, var(--warning-banner));
-      color:      var(--on-warning-banner);
-    }
-  }
 }
 
 .template-editor {

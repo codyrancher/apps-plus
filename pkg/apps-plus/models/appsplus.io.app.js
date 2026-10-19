@@ -152,17 +152,7 @@ export default class App extends SteveModel {
   }
 
   get canCustomEdit() {
-    return !this.isHelmChart;
-  }
-
-  get availableActions() {
-    const out = super.availableActions || [];
-
-    if (this.isHelmChart) {
-      return out.filter((action) => action?.action !== 'goToEdit');
-    }
-
-    return out;
+    return true;
   }
 
   get editLocation() {
