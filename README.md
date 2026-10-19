@@ -8,7 +8,7 @@
 
 ## Demo Video
 
-https://github.com/user-attachments/assets/2025c99a-a65d-488a-b13e-5dd9c47fb2da
+https://github.com/user-attachments/assets/086b619b-6f6e-4c71-917e-e45f9da8b9a5
 
 - [Download MP4 (`docs/apps-plus-demo.mp4`)](docs/apps-plus-demo.mp4)
 
