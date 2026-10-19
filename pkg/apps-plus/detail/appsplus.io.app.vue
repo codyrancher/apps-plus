@@ -2,7 +2,6 @@
 import ResourceTabs from '@shell/components/form/ResourceTabs';
 import Tab from '@shell/components/Tabbed/Tab';
 import { Banner } from '@components/Banner';
-import { RcButton } from '@components/RcButton';
 import RelatedResourcesTable from '../components/RelatedResourcesTable.vue';
 import ValuesSummaryTable from '../components/ValuesSummaryTable.vue';
 import RenderedYamlFiles from '../components/RenderedYamlFiles.vue';
@@ -19,7 +18,6 @@ export default {
     ResourceTabs,
     Tab,
     Banner,
-    RcButton,
     RelatedResourcesTable,
     ValuesSummaryTable,
     RenderedYamlFiles,
@@ -140,14 +138,6 @@ export default {
 
 <template>
   <div>
-    <RcButton
-      variant="secondary"
-      class="mb-20"
-      @click="$router.push(value.createInstanceLocation)"
-    >
-      {{ t('appsPlus.action.createInstance') }}
-    </RcButton>
-
     <ResourceTabs
       :value="value"
       :need-events="false"
