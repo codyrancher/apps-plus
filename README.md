@@ -16,8 +16,8 @@ https://github.com/user-attachments/assets/7b89e462-0989-496e-9464-4809d592741f
 
 ## Key Capabilities
 
-- **Helm Repository Import with Dependency Configuration**: Point at any Helm repository URL (`index.yaml`) to discover and import all charts and their available versions as `App` resources, automatically extracting default `values.yaml` and chart dependencies. Use the **Dependencies** tab directly inside the **Import Helm Charts** dialog to inspect, add, or remove dependencies per chart before importing.
-- **Helm & YAML App Editing (`Edit Config`)**: Both Rancher-stored YAML apps and imported Helm chart apps support **Edit Config**, with dedicated **Default Values** and **Dependencies** tabs to customize default values and manage explicit or implicit chart dependencies after import.
+- **Helm Repository Import**: Point at any Helm repository URL (`index.yaml`) to discover and import all charts and their available versions as `App` resources, automatically extracting default `values.yaml` and chart dependencies.
+- **Helm & YAML App Editing (`Edit Config`)**: Both Rancher-stored YAML apps and imported Helm chart apps support **Edit Config**, with dedicated **Default Values** and **Dependencies** tabs to customize default values and manage explicit or implicit chart dependencies.
 - **Rancher-Stored YAML Apps**: Author reusable Kubernetes YAML templates directly in Rancher using built-in variables (`${app}`, `${instance}`, `${cluster}`, `${namespace}`) and custom parameters with default values stored in `etcd`.
 - **Automatic Dependency Resolution & Deletion Protection**:
   - Apps can declare explicit dependencies or inherit implicit dependencies from Helm charts (`Chart.yaml` `dependencies` or `appsplus.io/dependencies` annotations).
@@ -63,7 +63,7 @@ https://github.com/user-attachments/assets/7b89e462-0989-496e-9464-4809d592741f
   - `render.ts` — Template variable extraction, substitution (`${app}`, `${instance}`, `${cluster}`, `${namespace}`), and value typing.
   - `service.ts` — Automatic registration of `apps.appsplus.io` and `appinstances.appsplus.io` CRDs and the in-cluster Helm proxy service (`apps-plus-api`).
   - `models/appsplus.io.app.js` & `models/appsplus.io.appinstance.js` — Steve models handling recursive dependency installation, deletion protection, and 1-to-1 Fleet `Bundle` reconciliation.
-  - `list/`, `edit/`, `detail/`, `components/` — Vue components for the grouped Apps & Installations list, Helm chart import modal (with **Charts** and **Dependencies** tabs), App edit view (for both YAML and Helm apps), shared `DependenciesEditor`, dependency & version popovers, values editors, and Related Resources tables.
+  - `list/`, `edit/`, `detail/`, `components/` — Vue components for the grouped Apps & Installations list, Helm chart import modal, App edit view (for both YAML and Helm apps), `DependenciesEditor`, dependency & version popovers, values editors, and Related Resources tables.
 - `docs/` — Architecture & flow diagrams (`architecture.png`, `flow-diagram.png`) and recorded demo video (`apps-plus-demo.mp4`).
 
 If you edit the CRD schemas under `pkg/apps-plus/service/crds/` or the proxy server in `pkg/apps-plus/service/server.mjs`, regenerate the embedded TypeScript bundles:
