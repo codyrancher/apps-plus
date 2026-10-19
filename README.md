@@ -8,10 +8,9 @@
 
 ## Demo Video
 
-<video src="docs/apps-plus-demo.mp4" controls width="100%"></video>
+https://github.com/user-attachments/assets/7b89e462-0989-496e-9464-4809d592741f
 
-- [Watch / Download MP4 (`docs/apps-plus-demo.mp4`)](docs/apps-plus-demo.mp4)
-- [Watch / Download WebM (`docs/apps-plus-demo.webm`)](docs/apps-plus-demo.webm)
+- [Download MP4 (`docs/apps-plus-demo.mp4`)](docs/apps-plus-demo.mp4)
 
 ---
 
@@ -31,63 +30,6 @@
 ## End-to-End Flow & Dependency Graph
 
 ![Apps Plus Flow Diagram](docs/flow-diagram.png)
-
-```mermaid
-flowchart TB
-  subgraph Sources["1. App Creation & Import"]
-    direction LR
-    HelmRepo["Helm Repository (index.yaml & chart .tgz)"]
-    RancherUI["Rancher UI Template Editor (YAML + parameters)"]
-  end
-
-  subgraph AppCRDs["2. App Definitions (CRD: apps.appsplus.io)"]
-    direction LR
-    WebApp["App: hello-webapp (spec.helm, versions: 0.2.0, 0.1.0)"]
-    RedisApp["App: hello-redis (spec.helm, versions: 0.2.0, 0.1.0)"]
-    ConfigApp["App: hello-config (spec.helm, versions: 0.2.0, 0.1.0)"]
-    CustomApp["App: custom-config-app (spec.templates in etcd)"]
-
-    WebApp -->|spec.dependencies| RedisApp
-    RedisApp -->|spec.dependencies| ConfigApp
-  end
-
-  subgraph InstCRDs["3. Installations & Auto-Dependency Resolution (CRD: appinstances.appsplus.io)"]
-    direction LR
-    WebInst["AppInstance: hello-webapp-prod (Primary Installation)"]
-    RedisInst["AppInstance: hello-redis-dep (Auto-created & delete-protected)"]
-    ConfigInst["AppInstance: hello-config-dep (Auto-created & delete-protected)"]
-    CustomInst["AppInstance: custom-config-prod (Template Installation)"]
-
-    WebInst -.->|auto-creates & required-by| RedisInst
-    RedisInst -.->|auto-creates & required-by| ConfigInst
-  end
-
-  subgraph FleetLayer["4. Existing Fleet Resources (fleet.cattle.io/v1alpha1)"]
-    direction LR
-    WebBundle["Fleet Bundle: apps-plus-hello-webapp-prod (spec.helm)"]
-    RedisBundle["Fleet Bundle: apps-plus-hello-redis-dep (spec.helm)"]
-    ConfigBundle["Fleet Bundle: apps-plus-hello-config-dep (spec.helm)"]
-    CustomBundle["Fleet Bundle: apps-plus-custom-config-prod (spec.resources)"]
-
-    WebBundle -->|spec.dependsOn| RedisBundle
-    RedisBundle -->|spec.dependsOn| ConfigBundle
-  end
-
-  subgraph RolloutLayer["5. Fleet Controller & Target Cluster Workloads"]
-    direction LR
-    BundleDeploy["Fleet BundleDeployments (1 per target cluster, enforces readiness)"]
-    HelmReleases["Helm Releases on Cluster: hello-config -> hello-redis -> hello-webapp"]
-    K8sResources["Rendered YAML on Cluster: ConfigMap custom-config-prod-config"]
-
-    BundleDeploy -->|Fleet Agent deploys| HelmReleases
-    BundleDeploy -->|Fleet Agent deploys| K8sResources
-  end
-
-  Sources -->|Import / Create App| AppCRDs
-  AppCRDs -->|Install & Resolve Dependencies| InstCRDs
-  InstCRDs -->|1-to-1 Reconcile| FleetLayer
-  FleetLayer -->|Ordered Rollout| RolloutLayer
-```
 
 ---
 
@@ -122,7 +64,7 @@ flowchart TB
   - `service.ts` — Automatic registration of `apps.appsplus.io` and `appinstances.appsplus.io` CRDs and the in-cluster Helm proxy service (`apps-plus-api`).
   - `models/appsplus.io.app.js` & `models/appsplus.io.appinstance.js` — Steve models handling recursive dependency installation, deletion protection, and 1-to-1 Fleet `Bundle` reconciliation.
   - `list/`, `edit/`, `detail/`, `components/` — Vue components for the grouped Apps & Installations list, Helm chart import modal (with **Charts** and **Dependencies** tabs), App edit view (for both YAML and Helm apps), shared `DependenciesEditor`, dependency & version popovers, values editors, and Related Resources tables.
-- `docs/` — Architecture & flow diagrams (`architecture.png`, `flow-diagram.png`) and recorded demo video (`apps-plus-demo.mp4`, `apps-plus-demo.webm`).
+- `docs/` — Architecture & flow diagrams (`architecture.png`, `flow-diagram.png`) and recorded demo video (`apps-plus-demo.mp4`).
 
 If you edit the CRD schemas under `pkg/apps-plus/service/crds/` or the proxy server in `pkg/apps-plus/service/server.mjs`, regenerate the embedded TypeScript bundles:
 
