@@ -28,7 +28,7 @@ appsPlus:
     importing: Importing...
     detailBanner: 'Deploys Helm chart {chart} from {repo}'
     chartsTab: Charts
-    selectChartForDeps: Configure dependencies for chart:
+    selectChartForDeps: 'Configure dependencies for chart:'
   dependencies:
     hint: Add apps that must exist in Apps Plus before this app can be installed. Select an existing app from the dropdown or type a new app name to add a dependency that does not exist yet.
     selectLabel: Dependency App
